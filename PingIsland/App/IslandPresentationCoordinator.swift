@@ -14,7 +14,7 @@ final class IslandPresentationCoordinator {
     private var activeDetachmentPayload: IslandDetachmentPayload?
     private var cancellables = Set<AnyCancellable>()
 
-    init(screen: NSScreen, sessionMonitor: SessionMonitor = SessionMonitor()) {
+    init(screen: NSScreen, sessionMonitor: SessionMonitor) {
         self.screen = screen
         self.sessionMonitor = sessionMonitor
         self.viewModel = Self.makeViewModel(for: screen)

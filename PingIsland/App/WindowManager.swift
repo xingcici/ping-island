@@ -20,7 +20,7 @@ class WindowManager {
     private var cancellables = Set<AnyCancellable>()
     private var lastMigrationTime: Date = .distantPast
 
-    init(sessionMonitor: SessionMonitor = SessionMonitor()) {
+    init(sessionMonitor: SessionMonitor) {
         self.sessionMonitor = sessionMonitor
         startFocusTracking()
     }
