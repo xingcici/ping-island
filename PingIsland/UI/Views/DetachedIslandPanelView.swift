@@ -45,6 +45,10 @@ enum DetachedIslandPanelMetrics {
     static let floatingUsageBoltVerticalOffset: CGFloat =
         DetachedIslandPetMetrics.standard.floatingUsageBoltVerticalOffset
     static let settingsHintBubbleSize = CGSize(width: 248, height: 92)
+    static let attentionBubbleMinimumHeight: CGFloat = 170
+    static let attentionBubbleFallbackHeight: CGFloat = 228
+    static let evaluatingHintBubbleMinimumHeight: CGFloat = 112
+    static let evaluatingHintBubbleFallbackHeight: CGFloat = 148
     static let completionBubbleMinimumHeight: CGFloat = 120
     static let completionBubbleFallbackHeight: CGFloat = 180
 
@@ -238,7 +242,8 @@ enum DetachedIslandContentModel {
         viewModel: NotchViewModel,
         measuredAttentionBubbleHeight: CGFloat? = nil,
         measuredCompletionBubbleHeight: CGFloat? = nil,
-        additionalFooterHeight: CGFloat = 0
+        additionalFooterHeight: CGFloat = 0,
+        usesCompactAttentionBubbleHeight: Bool = false
     ) -> CGSize {
         let widthLimit = viewModel.screenRect.width - 132
 
@@ -260,18 +265,29 @@ enum DetachedIslandContentModel {
             return CGSize(width: width, height: height)
         case .attentionNotification(let session):
             let width = min(widthLimit, 392)
+            let minimumHeight = usesCompactAttentionBubbleHeight
+                ? DetachedIslandPanelMetrics.evaluatingHintBubbleMinimumHeight
+                : DetachedIslandPanelMetrics.attentionBubbleMinimumHeight
             let height: CGFloat
             if let measuredAttentionBubbleHeight {
                 height = min(
                     viewModel.screenRect.height - 160,
-                    max(170, measuredAttentionBubbleHeight)
+                    max(minimumHeight, measuredAttentionBubbleHeight)
+                )
+            } else if usesCompactAttentionBubbleHeight {
+                height = min(
+                    viewModel.screenRect.height - 160,
+                    DetachedIslandPanelMetrics.evaluatingHintBubbleFallbackHeight
                 )
             } else if session.needsQuestionResponse {
                 height = min(viewModel.screenRect.height - 160, 316)
             } else {
-                height = min(viewModel.screenRect.height - 160, 228)
+                height = min(
+                    viewModel.screenRect.height - 160,
+                    DetachedIslandPanelMetrics.attentionBubbleFallbackHeight
+                )
             }
-            return CGSize(width: width, height: max(170, height))
+            return CGSize(width: width, height: max(minimumHeight, height))
         case .completionNotification:
             let width = min(widthLimit, 392)
             let height = measuredCompletionBubbleHeight
@@ -332,6 +348,7 @@ enum DetachedIslandContentModel {
         measuredAttentionBubbleHeight: CGFloat? = nil,
         measuredCompletionBubbleHeight: CGFloat? = nil,
         additionalFooterHeight: CGFloat = 0,
+        usesCompactAttentionBubbleHeight: Bool = false,
         activeCompletionNotification: SessionCompletionNotification? = nil,
         guideBubbleSize: CGSize? = nil,
         petScreenAnchor: CGPoint? = nil,
@@ -384,7 +401,8 @@ enum DetachedIslandContentModel {
             viewModel: viewModel,
             measuredAttentionBubbleHeight: measuredAttentionBubbleHeight,
             measuredCompletionBubbleHeight: measuredCompletionBubbleHeight,
-            additionalFooterHeight: additionalFooterHeight
+            additionalFooterHeight: additionalFooterHeight,
+            usesCompactAttentionBubbleHeight: usesCompactAttentionBubbleHeight
         )
         return bubbleLayout(
             petSize: petSize,
@@ -680,6 +698,11 @@ struct DetachedIslandPanelView: View {
         )
     }
 
+    private var usesCompactAttentionBubbleHeight: Bool {
+        guard case .attentionNotification(let session) = bubbleRoute else { return false }
+        return sessionMonitor.aiApprovalState(for: session.sessionId)?.isEvaluating == true
+    }
+
     private var layout: DetachedIslandWindowLayout {
         DetachedIslandContentModel.layout(
             for: sortedSessions,
@@ -691,6 +714,7 @@ struct DetachedIslandPanelView: View {
             additionalFooterHeight: shouldShowFloatingUsageFooter
                 ? DetachedIslandPanelMetrics.usageFooterReservedHeight
                 : 0,
+            usesCompactAttentionBubbleHeight: usesCompactAttentionBubbleHeight,
             activeCompletionNotification: bubbleViewState.activeCompletionNotification,
             guideBubbleSize: interactionModel.isSettingsHintVisible
                 ? DetachedIslandPanelMetrics.settingsHintBubbleSize
@@ -804,7 +828,9 @@ struct DetachedIslandPanelView: View {
                     ? min(
                         viewModel.screenRect.height - 160,
                         max(
-                            170,
+                            usesCompactAttentionBubbleHeight
+                                ? DetachedIslandPanelMetrics.evaluatingHintBubbleMinimumHeight
+                                : DetachedIslandPanelMetrics.attentionBubbleMinimumHeight,
                             height + (DetachedIslandPanelMetrics.bubbleVerticalPadding * 2)
                         )
                     )

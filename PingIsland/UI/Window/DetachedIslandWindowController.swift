@@ -653,6 +653,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
+                self.bubbleViewState.setMeasuredAttentionBubbleHeight(nil)
                 let instances = self.sessionMonitor.instances
                 self.handleManualAttentionChange()
                 self.handleSessionSoundTransitions(instances)
@@ -863,9 +864,23 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
         petAnchorScreen: CGPoint? = nil,
         availableFrame: CGRect? = nil
     ) -> DetachedIslandWindowLayout {
+        let route: IslandExpandedRoute? = {
+            guard let mode = DetachedIslandBubbleContentMode(bubbleState: bubbleState) else {
+                return nil
+            }
+            return DetachedIslandContentModel.route(
+                for: sessionMonitor.instances,
+                viewModel: viewModel,
+                mode: mode,
+                activeCompletionNotification: activeCompletionNotification
+            )
+        }()
+        let usesCompactAttentionBubbleHeight: Bool = {
+            guard case .attentionNotification(let session) = route else { return false }
+            return sessionMonitor.aiApprovalState(for: session.sessionId)?.isEvaluating == true
+        }()
         let additionalFooterHeight: CGFloat = {
-            guard AppSettings.showUsage,
-                  let mode = DetachedIslandBubbleContentMode(bubbleState: bubbleState) else {
+            guard AppSettings.showUsage, let route else {
                 return 0
             }
 
@@ -875,13 +890,6 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
                 mode: AppSettings.usageValueMode,
                 locale: AppSettings.shared.locale
             )
-            let route = DetachedIslandContentModel.route(
-                for: sessionMonitor.instances,
-                viewModel: viewModel,
-                mode: mode,
-                activeCompletionNotification: activeCompletionNotification
-            )
-
             return UsageSummaryPresenter.shouldShowSummary(
                 for: route,
                 showUsage: AppSettings.showUsage,
@@ -897,6 +905,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
             measuredAttentionBubbleHeight: measuredAttentionBubbleHeight,
             measuredCompletionBubbleHeight: measuredCompletionBubbleHeight,
             additionalFooterHeight: additionalFooterHeight,
+            usesCompactAttentionBubbleHeight: usesCompactAttentionBubbleHeight,
             activeCompletionNotification: activeCompletionNotification,
             guideBubbleSize: guideBubbleSize,
             petScreenAnchor: petAnchorScreen,

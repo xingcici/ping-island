@@ -685,6 +685,58 @@ final class DetachedIslandWindowControllerTests: XCTestCase {
         XCTAssertEqual(cappedHeight, 740, accuracy: 0.5)
     }
 
+    func testEvaluatingHintBubbleUsesCompactHeightPolicy() {
+        let viewModel = makeViewModel()
+        let attention = makeSession(
+            id: "approval",
+            phase: .waitingForApproval(
+                PermissionContext(
+                    toolUseId: "tool-1",
+                    toolName: "Bash",
+                    toolInput: ["command": AnyCodable("true")],
+                    receivedAt: Date()
+                )
+            )
+        )
+
+        let fallbackHeight = DetachedIslandContentModel.bubbleContentSize(
+            for: .attentionNotification(attention),
+            sessions: [attention],
+            viewModel: viewModel,
+            usesCompactAttentionBubbleHeight: true
+        ).height
+        let measuredHeight = DetachedIslandContentModel.bubbleContentSize(
+            for: .attentionNotification(attention),
+            sessions: [attention],
+            viewModel: viewModel,
+            measuredAttentionBubbleHeight: 126,
+            usesCompactAttentionBubbleHeight: true
+        ).height
+        let minimumHeight = DetachedIslandContentModel.bubbleContentSize(
+            for: .attentionNotification(attention),
+            sessions: [attention],
+            viewModel: viewModel,
+            measuredAttentionBubbleHeight: 80,
+            usesCompactAttentionBubbleHeight: true
+        ).height
+
+        XCTAssertEqual(
+            fallbackHeight,
+            DetachedIslandPanelMetrics.evaluatingHintBubbleFallbackHeight,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(measuredHeight, 126, accuracy: 0.5)
+        XCTAssertEqual(
+            minimumHeight,
+            DetachedIslandPanelMetrics.evaluatingHintBubbleMinimumHeight,
+            accuracy: 0.5
+        )
+        XCTAssertLessThan(
+            fallbackHeight,
+            DetachedIslandPanelMetrics.attentionBubbleMinimumHeight
+        )
+    }
+
     func testCompletionBubbleUsesMeasuredHeightBeforeFallback() {
         let viewModel = makeViewModel()
         let notification = SessionCompletionNotification(
