@@ -189,7 +189,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     private func startWindowManagerIfNeeded() {
         if windowManager == nil {
-            windowManager = WindowManager()
+            windowManager = WindowManager(sessionMonitor: startupSessionMonitor)
         }
         _ = windowManager?.setupNotchWindow()
     }

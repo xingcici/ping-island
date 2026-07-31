@@ -26,6 +26,7 @@ This file is a routing layer for coding agents working in this repo. Keep it sho
 - Usage/quota snapshots for Claude status-line caches, Claude-family transcript token totals, and Codex rollout logs: `PingIsland/Services/Usage/`
 - Native runtime rollout scaffold: `PingIsland/Services/Runtime/`, `PingIsland/Core/FeatureFlags.swift`
 - Session bridge for UI: `PingIsland/Services/Session/SessionMonitor.swift`
+  - `AppDelegate` owns the runtime `SessionMonitor` and injects that same instance through `WindowManager` into `IslandPresentationCoordinator`; hook-owned transient UI state such as AI approval evaluation must not live on a second monitor instance
 - Model-assisted Hook approval configuration, OpenAI-compatible decision calls, Keychain credentials, and 30-day local audit: `PingIsland/Services/Approval/`, `PingIsland/Core/Settings.swift`, `PingIsland/UI/Views/SettingsWindowView.swift`
 - Notch state and layout: `PingIsland/Core/NotchViewModel.swift`, `PingIsland/UI/Views/NotchView.swift`
 - App-wide low-power policy for background polling, event monitoring, UI animation tiers, and silent update gating: `PingIsland/Core/EnergyGovernor.swift`

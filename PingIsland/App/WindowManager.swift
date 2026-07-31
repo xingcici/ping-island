@@ -15,11 +15,13 @@ private let logger = Logger(subsystem: "com.wudanwu.pingisland", category: "Wind
 @MainActor
 class WindowManager {
     private(set) var presentationCoordinator: IslandPresentationCoordinator?
+    let sessionMonitor: SessionMonitor
     private var activeScreenNumber: NSNumber?
     private var cancellables = Set<AnyCancellable>()
     private var lastMigrationTime: Date = .distantPast
 
-    init() {
+    init(sessionMonitor: SessionMonitor = SessionMonitor()) {
+        self.sessionMonitor = sessionMonitor
         startFocusTracking()
     }
 
@@ -42,7 +44,10 @@ class WindowManager {
         }
 
         presentationCoordinator?.invalidate()
-        let presentationCoordinator = IslandPresentationCoordinator(screen: screen)
+        let presentationCoordinator = IslandPresentationCoordinator(
+            screen: screen,
+            sessionMonitor: sessionMonitor
+        )
         self.presentationCoordinator = presentationCoordinator
         activeScreenNumber = screenNumber
         return nil

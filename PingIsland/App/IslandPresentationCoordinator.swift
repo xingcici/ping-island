@@ -5,7 +5,7 @@ import Combine
 final class IslandPresentationCoordinator {
     private static let dockedWindowHeight: CGFloat = 750
 
-    let sessionMonitor = SessionMonitor()
+    let sessionMonitor: SessionMonitor
     let viewModel: NotchViewModel
 
     private var screen: NSScreen
@@ -14,8 +14,9 @@ final class IslandPresentationCoordinator {
     private var activeDetachmentPayload: IslandDetachmentPayload?
     private var cancellables = Set<AnyCancellable>()
 
-    init(screen: NSScreen) {
+    init(screen: NSScreen, sessionMonitor: SessionMonitor = SessionMonitor()) {
         self.screen = screen
+        self.sessionMonitor = sessionMonitor
         self.viewModel = Self.makeViewModel(for: screen)
         bindViewModel()
         bindSettings()
