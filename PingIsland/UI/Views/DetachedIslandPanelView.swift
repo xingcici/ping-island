@@ -349,6 +349,7 @@ enum DetachedIslandContentModel {
         measuredCompletionBubbleHeight: CGFloat? = nil,
         additionalFooterHeight: CGFloat = 0,
         usesCompactAttentionBubbleHeight: Bool = false,
+        routeOverride: IslandExpandedRoute? = nil,
         activeCompletionNotification: SessionCompletionNotification? = nil,
         guideBubbleSize: CGSize? = nil,
         petScreenAnchor: CGPoint? = nil,
@@ -389,7 +390,7 @@ enum DetachedIslandContentModel {
             )
         }
 
-        let route = route(
+        let route = routeOverride ?? route(
             for: sessions,
             viewModel: viewModel,
             mode: mode,
@@ -691,7 +692,7 @@ struct DetachedIslandPanelView: View {
     private var bubbleRoute: IslandExpandedRoute? {
         guard let bubbleContentMode else { return nil }
         return DetachedIslandContentModel.route(
-            for: sortedSessions,
+            for: sessionMonitor.sessionsEligibleForAutomaticPresentation(from: sortedSessions),
             viewModel: viewModel,
             mode: bubbleContentMode,
             activeCompletionNotification: bubbleViewState.activeCompletionNotification
@@ -715,6 +716,7 @@ struct DetachedIslandPanelView: View {
                 ? DetachedIslandPanelMetrics.usageFooterReservedHeight
                 : 0,
             usesCompactAttentionBubbleHeight: usesCompactAttentionBubbleHeight,
+            routeOverride: bubbleRoute,
             activeCompletionNotification: bubbleViewState.activeCompletionNotification,
             guideBubbleSize: interactionModel.isSettingsHintVisible
                 ? DetachedIslandPanelMetrics.settingsHintBubbleSize

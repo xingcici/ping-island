@@ -32,6 +32,10 @@ struct AIApprovalStatusView: View {
             ProgressView()
                 .controlSize(.mini)
                 .tint(color)
+        case .automaticallyResolved(let decision, _, _):
+            Image(systemName: decision == .approve ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .font(.system(size: compact ? 10 : 11, weight: .semibold))
+                .foregroundColor(color)
         case .recommendation(let decision, _, _):
             Image(systemName: decision == .approve ? "brain.head.profile.fill" : "brain.head.profile")
                 .font(.system(size: compact ? 10 : 11, weight: .semibold))
@@ -47,6 +51,9 @@ struct AIApprovalStatusView: View {
         switch state.phase {
         case .evaluating:
             return AppLocalization.string("智能审批判断中")
+        case .automaticallyResolved(let decision, let risk, _):
+            let choice = AppLocalization.string(decision == .approve ? "已自动允许" : "已自动拒绝")
+            return "\(choice) · \(AppLocalization.string(risk.title))"
         case .recommendation(let decision, let risk, _):
             let choice = AppLocalization.string(decision == .approve ? "建议允许" : "建议拒绝")
             return "\(choice) · \(AppLocalization.string(risk.title))"
@@ -59,6 +66,8 @@ struct AIApprovalStatusView: View {
         switch state.phase {
         case .evaluating:
             return nil
+        case .automaticallyResolved(_, _, let reason):
+            return reason
         case .recommendation(_, _, let reason):
             return reason
         case .failed(let message):
@@ -70,6 +79,8 @@ struct AIApprovalStatusView: View {
         switch state.phase {
         case .evaluating:
             return SettingsCategory.aiApproval.tint
+        case .automaticallyResolved(let decision, _, _):
+            return decision == .approve ? TerminalColors.green : TerminalColors.amber
         case .recommendation(let decision, _, _):
             return decision == .approve ? TerminalColors.green : TerminalColors.amber
         case .failed:

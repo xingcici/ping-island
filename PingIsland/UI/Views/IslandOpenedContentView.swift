@@ -27,7 +27,9 @@ struct IslandOpenedContentView: View {
             surface: surface,
             trigger: trigger,
             contentType: viewModel.contentType,
-            sessions: sessionMonitor.instances,
+            sessions: sessionMonitor.sessionsEligibleForAutomaticPresentation(
+                from: sessionMonitor.instances
+            ),
             activeCompletionNotification: activeCompletionNotification
         )
     }

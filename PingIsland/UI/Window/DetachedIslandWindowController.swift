@@ -864,12 +864,15 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
         petAnchorScreen: CGPoint? = nil,
         availableFrame: CGRect? = nil
     ) -> DetachedIslandWindowLayout {
+        let routingSessions = sessionMonitor.sessionsEligibleForAutomaticPresentation(
+            from: sessionMonitor.instances
+        )
         let route: IslandExpandedRoute? = {
             guard let mode = DetachedIslandBubbleContentMode(bubbleState: bubbleState) else {
                 return nil
             }
             return DetachedIslandContentModel.route(
-                for: sessionMonitor.instances,
+                for: routingSessions,
                 viewModel: viewModel,
                 mode: mode,
                 activeCompletionNotification: activeCompletionNotification
@@ -906,6 +909,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
             measuredCompletionBubbleHeight: measuredCompletionBubbleHeight,
             additionalFooterHeight: additionalFooterHeight,
             usesCompactAttentionBubbleHeight: usesCompactAttentionBubbleHeight,
+            routeOverride: route,
             activeCompletionNotification: activeCompletionNotification,
             guideBubbleSize: guideBubbleSize,
             petScreenAnchor: petAnchorScreen,
@@ -1444,8 +1448,11 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
         case .hidden:
             return
         case .hoverPreview:
+            let eligibleSessions = sessionMonitor.sessionsEligibleForAutomaticPresentation(
+                from: sessionMonitor.instances
+            )
             guard DetachedIslandContentModel.canPresentBubble(
-                from: sessionMonitor.instances,
+                from: eligibleSessions,
                 mode: .hoverPreview,
                 activeCompletionNotification: activeCompletionNotification
             ) else {

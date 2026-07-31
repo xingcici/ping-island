@@ -477,7 +477,9 @@ private struct HoverApprovalCard: View {
 
     var body: some View {
         Group {
-            if sessionMonitor.aiApprovalState(for: session.sessionId)?.isEvaluating == true {
+            if sessionMonitor.aiApprovalState(for: session.sessionId)?.isAutomaticallyResolved == true {
+                EmptyView()
+            } else if sessionMonitor.aiApprovalState(for: session.sessionId)?.isEvaluating == true {
                 evaluatingHint
             } else {
                 approvalContent

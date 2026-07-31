@@ -784,6 +784,22 @@ class SessionMonitor: ObservableObject {
             toolUseID: toolUseID,
             details: "decision=\(evaluation.decision.decision.rawValue) risk=\(evaluation.decision.risk.rawValue)"
         )
+        setAIApprovalState(
+            AIApprovalPresentationState(
+                toolUseID: toolUseID,
+                phase: .automaticallyResolved(
+                    decision: evaluation.decision.decision,
+                    risk: evaluation.decision.risk,
+                    reason: evaluation.decision.reason
+                )
+            ),
+            for: context.sessionID
+        )
+        AIApprovalRuntimeLog.record(
+            "automatic_presentation_suppressed",
+            sessionID: context.sessionID,
+            toolUseID: toolUseID
+        )
 
         await executeAIApprovalDecision(
             evaluation.decision,
@@ -800,9 +816,14 @@ class SessionMonitor: ObservableObject {
         ingress: SessionIngress
     ) async {
         let session = await SessionStore.shared.session(for: sessionID)
-        if let session,
-           session.needsApprovalResponse,
-           Self.approvalToolUseId(for: session) == toolUseID {
+        let wasPending = session.map { Self.hasPendingApproval($0, toolUseID: toolUseID) } ?? false
+        AIApprovalRuntimeLog.record(
+            "local_resolution_started",
+            sessionID: sessionID,
+            toolUseID: toolUseID,
+            details: "decision=\(decision.decision.rawValue) wasPending=\(wasPending) phase=\(session?.phase.description ?? "missing")"
+        )
+        if let session, wasPending {
             let approvalDecision: ApprovalDecision = decision.decision == .approve
                 ? .approve
                 : .deny(reason: decision.reason)
@@ -812,6 +833,17 @@ class SessionMonitor: ObservableObject {
                 decision: approvalDecision
             )
         }
+
+        let updatedSession = await SessionStore.shared.session(for: sessionID)
+        let remainsPending = updatedSession.map {
+            Self.hasPendingApproval($0, toolUseID: toolUseID)
+        } ?? false
+        AIApprovalRuntimeLog.record(
+            "local_resolution_completed",
+            sessionID: sessionID,
+            toolUseID: toolUseID,
+            details: "remainsPending=\(remainsPending) phase=\(updatedSession?.phase.description ?? "missing")"
+        )
 
         if ingress == .remoteBridge {
             RemoteConnectorManager.shared.respondToPermission(

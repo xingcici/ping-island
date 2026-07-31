@@ -109,8 +109,8 @@ final class ClaudeApprovalStateTests: XCTestCase {
         await store.process(.sessionArchived(sessionId: sessionId))
     }
 
-    func testSupersededPermissionRequestCancelsPreviousPendingHookResponse() async {
-        let sessionId = "claude-approval-superseded-\(UUID().uuidString)"
+    func testConcurrentPermissionRequestsRemainQueuedUntilEachIsResolved() async {
+        let sessionId = "claude-approval-concurrent-\(UUID().uuidString)"
         let store = SessionStore.shared
         let recorder = PendingHookCancellationRecorder()
 
@@ -140,7 +140,29 @@ final class ClaudeApprovalStateTests: XCTestCase {
 
         let session = await store.session(for: sessionId)
         XCTAssertEqual(session?.activePermission?.toolUseId, "tool-grep")
-        XCTAssertEqual(recorder.toolUseIds, ["tool-read"])
+        XCTAssertTrue(recorder.toolUseIds.isEmpty)
+        XCTAssertEqual(
+            session?.chatItems.compactMap { item -> String? in
+                guard case .toolCall(let tool) = item.type,
+                      tool.status == .waitingForApproval else {
+                    return nil
+                }
+                return item.id
+            },
+            ["tool-read", "tool-grep"]
+        )
+
+        await store.process(.permissionApproved(sessionId: sessionId, toolUseId: "tool-grep"))
+
+        var updatedSession = await store.session(for: sessionId)
+        XCTAssertEqual(updatedSession?.activePermission?.toolUseId, "tool-read")
+        XCTAssertTrue(updatedSession?.needsApprovalResponse ?? false)
+
+        await store.process(.permissionApproved(sessionId: sessionId, toolUseId: "tool-read"))
+
+        updatedSession = await store.session(for: sessionId)
+        XCTAssertEqual(updatedSession?.phase, .processing)
+        XCTAssertFalse(updatedSession?.needsApprovalResponse ?? true)
 
         await store.process(.sessionArchived(sessionId: sessionId))
         await store.setPendingHookResponseCancellationHandlerForTesting(nil)

@@ -102,6 +102,7 @@ struct AIApprovalAuditRecord: Codable, Identifiable, Sendable {
 
 enum AIApprovalPresentationPhase: Equatable, Sendable {
     case evaluating
+    case automaticallyResolved(decision: AIApprovalDecisionChoice, risk: AIApprovalRisk, reason: String)
     case recommendation(decision: AIApprovalDecisionChoice, risk: AIApprovalRisk, reason: String)
     case failed(message: String)
 }
@@ -112,6 +113,20 @@ struct AIApprovalPresentationState: Equatable, Sendable {
 
     var isEvaluating: Bool {
         if case .evaluating = phase { return true }
+        return false
+    }
+
+    var suppressesManualApproval: Bool {
+        switch phase {
+        case .evaluating, .automaticallyResolved:
+            return true
+        case .recommendation, .failed:
+            return false
+        }
+    }
+
+    var isAutomaticallyResolved: Bool {
+        if case .automaticallyResolved = phase { return true }
         return false
     }
 }
@@ -143,7 +158,7 @@ enum AIApprovalPresentationPolicy {
         needsApprovalResponse: Bool,
         state: AIApprovalPresentationState?
     ) -> Bool {
-        needsApprovalResponse && state?.isEvaluating != true
+        needsApprovalResponse && state?.suppressesManualApproval != true
     }
 
     nonisolated static func shouldPresentAutomatically(
@@ -152,8 +167,14 @@ enum AIApprovalPresentationPolicy {
         showEvaluatingHint: Bool
     ) -> Bool {
         guard needsApprovalResponse else { return true }
-        guard state?.isEvaluating == true else { return true }
-        return showEvaluatingHint
+        switch state?.phase {
+        case .evaluating:
+            return showEvaluatingHint
+        case .automaticallyResolved:
+            return false
+        case .recommendation, .failed, nil:
+            return true
+        }
     }
 }
 

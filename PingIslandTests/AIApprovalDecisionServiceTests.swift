@@ -189,6 +189,27 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         }
     }
 
+    func testPresentationPolicySuppressesAutomaticallyResolvedApproval() {
+        let resolved = AIApprovalPresentationState(
+            toolUseID: "tool-1",
+            phase: .automaticallyResolved(
+                decision: .approve,
+                risk: .low,
+                reason: "Safe"
+            )
+        )
+
+        XCTAssertFalse(AIApprovalPresentationPolicy.shouldPresentManualApproval(
+            needsApprovalResponse: true,
+            state: resolved
+        ))
+        XCTAssertFalse(AIApprovalPresentationPolicy.shouldPresentAutomatically(
+            needsApprovalResponse: true,
+            state: resolved,
+            showEvaluatingHint: true
+        ))
+    }
+
     func testRequestStateStorePreservesConcurrentToolsInOneSession() {
         var store = AIApprovalRequestStateStore()
         let evaluating = AIApprovalPresentationState(toolUseID: "tool-1", phase: .evaluating)

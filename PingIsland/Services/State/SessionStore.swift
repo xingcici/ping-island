@@ -668,6 +668,7 @@ actor SessionStore {
 
         if event.event == "PermissionRequest", let toolUseId = event.toolUseId {
             Self.logger.debug("Setting tool \(toolUseId.prefix(12), privacy: .public) status to waitingForApproval")
+            ensurePendingApprovalTool(for: event, toolUseId: toolUseId, in: &session)
             updateToolStatus(in: &session, toolId: toolUseId, status: .waitingForApproval)
         }
 
@@ -1349,9 +1350,19 @@ actor SessionStore {
         _ pending: PendingHookResponse,
         in session: SessionState
     ) -> Bool {
-        if pending.kind == .approval,
-           session.activePermission?.toolUseId == pending.toolUseId {
-            return true
+        if pending.kind == .approval {
+            if session.activePermission?.toolUseId == pending.toolUseId {
+                return true
+            }
+            if session.chatItems.contains(where: { item in
+                guard item.id == pending.toolUseId,
+                      case .toolCall(let tool) = item.type else {
+                    return false
+                }
+                return tool.status == .waitingForApproval
+            }) {
+                return true
+            }
         }
 
         guard let intervention = session.intervention,
@@ -2381,6 +2392,53 @@ actor SessionStore {
             let count = session.chatItems.count
             Self.logger.warning("Tool \(toolId.prefix(16), privacy: .public) not found in chatItems (count: \(count))")
         }
+    }
+
+    private func ensurePendingApprovalTool(
+        for event: HookEvent,
+        toolUseId: String,
+        in session: inout SessionState
+    ) {
+        guard !session.chatItems.contains(where: { $0.id == toolUseId }) else { return }
+
+        let input = event.toolInput?.reduce(into: [String: String]()) { result, pair in
+            switch pair.value.value {
+            case let value as String:
+                result[pair.key] = value
+            case let value as Int:
+                result[pair.key] = String(value)
+            case let value as Bool:
+                result[pair.key] = value ? "true" : "false"
+            default:
+                break
+            }
+        } ?? [:]
+        session.chatItems.append(
+            ChatHistoryItem(
+                id: toolUseId,
+                type: .toolCall(
+                    ToolCallItem(
+                        name: event.tool ?? "Permission",
+                        input: input,
+                        status: .waitingForApproval,
+                        result: nil,
+                        structuredResult: nil,
+                        subagentTools: []
+                    )
+                ),
+                timestamp: Date()
+            )
+        )
+        let pendingCount = session.chatItems.reduce(into: 0) { count, item in
+            guard case .toolCall(let tool) = item.type,
+                  tool.status == .waitingForApproval else {
+                return
+            }
+            count += 1
+        }
+        Self.logger.info(
+            "Queued permission tool session=\(session.sessionId.prefix(8), privacy: .public) tool=\(toolUseId.prefix(12), privacy: .public) pendingCount=\(pendingCount)"
+        )
     }
 
     private func shouldClearIntervention(for event: HookEvent, newPhase: SessionPhase, currentIntervention: SessionIntervention?) -> Bool {
