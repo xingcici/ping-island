@@ -786,14 +786,16 @@ class SessionMonitor: ObservableObject {
         await executeAIApprovalDecision(
             evaluation.decision,
             sessionID: context.sessionID,
-            toolUseID: toolUseID
+            toolUseID: toolUseID,
+            ingress: context.ingress
         )
     }
 
     private func executeAIApprovalDecision(
         _ decision: AIApprovalDecision,
         sessionID: String,
-        toolUseID: String
+        toolUseID: String,
+        ingress: SessionIngress
     ) async {
         let session = await SessionStore.shared.session(for: sessionID)
         if let session,
@@ -809,7 +811,7 @@ class SessionMonitor: ObservableObject {
             )
         }
 
-        if session.ingress == .remoteBridge {
+        if ingress == .remoteBridge {
             RemoteConnectorManager.shared.respondToPermission(
                 toolUseId: toolUseID,
                 decision: decision.decision == .approve ? "approve" : "deny",
@@ -826,7 +828,7 @@ class SessionMonitor: ObservableObject {
             "hook_response_sent",
             sessionID: sessionID,
             toolUseID: toolUseID,
-            details: "decision=\(decision.decision.rawValue) ingress=\(session?.ingress.rawValue ?? "unknown")"
+            details: "decision=\(decision.decision.rawValue) ingress=\(ingress.rawValue)"
         )
         if let session {
             await TelemetryService.shared.recordAttentionResolved(

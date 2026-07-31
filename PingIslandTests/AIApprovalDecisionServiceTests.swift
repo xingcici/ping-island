@@ -246,6 +246,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         let context = AIApprovalRequestContext(
             sessionID: "session-1",
             toolUseID: "tool-1",
+            ingress: .hookBridge,
             provider: "claude",
             client: "Claude Code",
             cwd: "/workspace/project",
@@ -299,6 +300,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         AIApprovalRequestContext(
             sessionID: "session-1",
             toolUseID: "tool-1",
+            ingress: .hookBridge,
             provider: "claude",
             client: "Claude Code",
             cwd: "/workspace/project",
@@ -329,6 +331,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
             error: nil,
             context: AIApprovalAuditContext(
                 toolUseID: "tool-1",
+                ingress: "hookBridge",
                 cwd: "/workspace/project",
                 interventionTitle: "Approve read",
                 interventionMessage: "Read a project file",

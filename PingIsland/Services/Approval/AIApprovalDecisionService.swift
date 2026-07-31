@@ -73,6 +73,7 @@ enum AIApprovalExecutionOutcome: String, Codable, Sendable {
 
 struct AIApprovalAuditContext: Codable, Sendable {
     let toolUseID: String?
+    let ingress: String?
     let cwd: String
     let interventionTitle: String
     let interventionMessage: String
@@ -137,6 +138,7 @@ struct AIApprovalRequestContext: Sendable {
 
     let sessionID: String
     let toolUseID: String
+    let ingress: SessionIngress
     let provider: String
     let client: String
     let cwd: String
@@ -546,6 +548,7 @@ actor OpenAICompatibleApprovalClient {
         let toolInput = context.toolInput.mapValues { $0.value }
         let payload: [String: Any] = [
             "tool_use_id": context.toolUseID,
+            "ingress": context.ingress.rawValue,
             "provider": context.provider,
             "client": context.client,
             "cwd": context.cwd,
@@ -597,6 +600,7 @@ enum AIApprovalContextBuilder {
         return AIApprovalRequestContext(
             sessionID: session.sessionId,
             toolUseID: toolUseID,
+            ingress: event.ingress,
             provider: session.provider.rawValue,
             client: session.interactionDisplayName,
             cwd: session.cwd,
@@ -823,6 +827,7 @@ final class AIApprovalDecisionService {
             error: errorMessage,
             context: AIApprovalAuditContext(
                 toolUseID: context.toolUseID,
+                ingress: context.ingress.rawValue,
                 cwd: context.cwd,
                 interventionTitle: context.interventionTitle,
                 interventionMessage: context.interventionMessage,
@@ -837,6 +842,7 @@ final class AIApprovalDecisionService {
         let context = AIApprovalRequestContext(
             sessionID: "connection-test",
             toolUseID: "connection-test",
+            ingress: .hookBridge,
             provider: "test",
             client: "Ping Island",
             cwd: "/tmp/ping-island-connection-test",
