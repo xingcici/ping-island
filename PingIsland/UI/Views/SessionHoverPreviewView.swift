@@ -451,6 +451,7 @@ private struct HoverApprovalCard: View {
     @ObservedObject var sessionMonitor: SessionMonitor
     var suppressControls = false
     let onActionCompleted: () -> Void
+    @ObservedObject private var settings = AppSettings.shared
 
     private var providerLabel: String {
         session.messageBadgeDisplayName
@@ -475,6 +476,47 @@ private struct HoverApprovalCard: View {
     }
 
     var body: some View {
+        Group {
+            if sessionMonitor.aiApprovalState(for: session.sessionId)?.isEvaluating == true {
+                evaluatingHint
+            } else {
+                approvalContent
+            }
+        }
+        .padding(.top, 12)
+        .padding(.bottom, 18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var evaluatingHint: some View {
+        HStack(spacing: 12) {
+            MascotView(
+                kind: settings.mascotKind(for: session.mascotClient),
+                status: MascotStatus(session: session),
+                size: 30,
+                animationTime: 0
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(appLocalized: "正在替你判断这次操作…")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+                Text(appLocalized: "先忙你的，需要确认时我再叫你")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.52))
+            }
+
+            Spacer(minLength: 8)
+
+            ProgressView()
+                .controlSize(.small)
+                .tint(SettingsCategory.aiApproval.tint)
+        }
+        .padding(.horizontal, 4)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var approvalContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(verbatim: AppLocalization.format("%@ 请求批准", providerLabel))
@@ -494,7 +536,7 @@ private struct HoverApprovalCard: View {
 
             if suppressControls {
                 HoverTerminalRoutedPromptNotice(session: session)
-            } else {
+            } else if sessionMonitor.shouldPresentApproval(for: session) {
                 if let state = sessionMonitor.aiApprovalState(for: session.sessionId) {
                     AIApprovalStatusView(state: state)
                 }
@@ -527,9 +569,6 @@ private struct HoverApprovalCard: View {
                 }
             }
         }
-        .padding(.top, 12)
-        .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

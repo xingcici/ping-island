@@ -171,6 +171,25 @@ class SessionMonitor: ObservableObject {
         }
 
         let shouldAutoApprovePermission = await Self.shouldAutoApproveClaudePermission(for: effectiveEvent)
+        let aiApprovalConfiguration = shouldAutoApprovePermission
+            ? nil
+            : eligibleAIApprovalConfiguration(for: effectiveEvent)
+
+        if let aiApprovalConfiguration,
+           aiApprovalConfiguration.isEnabled,
+           let toolUseID = effectiveEvent.toolUseId,
+           !toolUseID.isEmpty {
+            AIApprovalRuntimeLog.record(
+                "hook_received",
+                sessionID: effectiveEvent.sessionId,
+                toolUseID: toolUseID,
+                details: "event=\(effectiveEvent.event) ingress=\(effectiveEvent.ingress.rawValue)"
+            )
+            setAIApprovalState(
+                AIApprovalPresentationState(toolUseID: toolUseID, phase: .evaluating),
+                for: effectiveEvent.sessionId
+            )
+        }
 
         await SessionStore.shared.process(.hookReceived(effectiveEvent))
 
@@ -216,7 +235,9 @@ class SessionMonitor: ObservableObject {
             )
         }
 
-        startAIApprovalIfEligible(for: effectiveEvent)
+        if let aiApprovalConfiguration {
+            startAIApprovalIfEligible(for: effectiveEvent, configuration: aiApprovalConfiguration)
+        }
 
         if effectiveEvent.event == "PostToolUse",
            let toolUseId = effectiveEvent.toolUseId,
@@ -550,33 +571,81 @@ class SessionMonitor: ObservableObject {
         aiApprovalStates[sessionId]
     }
 
-    private func startAIApprovalIfEligible(for event: HookEvent) {
+    func shouldPresentApproval(for session: SessionState) -> Bool {
+        session.needsApprovalResponse && aiApprovalStates[session.sessionId]?.isEvaluating != true
+    }
+
+    func shouldPresentAIApprovalEvaluatingHint(for session: SessionState) -> Bool {
+        AppSettings.shared.aiApprovalShowEvaluatingHint
+            && session.needsApprovalResponse
+            && aiApprovalStates[session.sessionId]?.isEvaluating == true
+    }
+
+    func sessionsEligibleForManualAttention(from sessions: [SessionState]) -> [SessionState] {
+        sessions.filter { session in
+            !session.needsApprovalResponse || shouldPresentApproval(for: session)
+        }
+    }
+
+    func sessionsEligibleForAutomaticPresentation(from sessions: [SessionState]) -> [SessionState] {
+        sessions.filter { session in
+            !session.needsApprovalResponse
+                || shouldPresentApproval(for: session)
+                || shouldPresentAIApprovalEvaluatingHint(for: session)
+        }
+    }
+
+    private func eligibleAIApprovalConfiguration(for event: HookEvent) -> AIApprovalConfiguration? {
         let configuration = aiApprovalService.configuration(from: AppSettings.shared)
         guard configuration.isEnabled,
               event.ingress == .hookBridge || event.ingress == .remoteBridge,
               event.expectsResponse,
               !event.suppressInAppPrompt,
-              !event.codexBypassPermissions else {
-            return
+              !event.codexBypassPermissions,
+              !event.isAskUserQuestionRequest,
+              event.event == "PreToolUse" || event.event == "PermissionRequest" else {
+            return nil
         }
+        return configuration
+    }
+
+    private func startAIApprovalIfEligible(
+        for event: HookEvent,
+        configuration: AIApprovalConfiguration
+    ) {
 
         Task { @MainActor [weak self] in
-            guard let self,
-                  let session = await SessionStore.shared.session(for: event.sessionId),
-                  session.intervention?.kind == .approval,
-                  session.needsApprovalResponse,
-                  let toolUseID = Self.approvalToolUseId(for: session),
+            guard let self else { return }
+            guard let session = await SessionStore.shared.session(for: event.sessionId),
+                  let toolUseID = event.toolUseId ?? Self.approvalToolUseId(for: session),
                   !toolUseID.isEmpty,
                   let context = AIApprovalContextBuilder.makeContext(event: event, session: session) else {
+                clearPreparedAIApprovalState(for: event)
                 return
             }
             let requestKey = AIApprovalRequestKey(sessionID: session.sessionId, toolUseID: toolUseID)
-            guard aiApprovalTasks[requestKey] == nil else { return }
+            guard aiApprovalTasks[requestKey] == nil else {
+                AIApprovalRuntimeLog.record(
+                    "duplicate_ignored",
+                    sessionID: session.sessionId,
+                    toolUseID: toolUseID
+                )
+                return
+            }
 
-            aiApprovalStates[session.sessionId] = AIApprovalPresentationState(
+            AIApprovalRuntimeLog.record(
+                "evaluation_enqueued",
+                sessionID: session.sessionId,
                 toolUseID: toolUseID,
-                phase: .evaluating
+                details: "model=\(configuration.model)"
             )
+
+            if Self.approvalToolUseId(for: session) == toolUseID {
+                setAIApprovalState(
+                    AIApprovalPresentationState(toolUseID: toolUseID, phase: .evaluating),
+                    for: session.sessionId
+                )
+            }
 
             let task = Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -607,10 +676,23 @@ class SessionMonitor: ObservableObject {
                         outcome: isCurrent ? .failed : .superseded,
                         error: isCurrent ? error : nil
                     )
+                    var loggedError = error.localizedDescription
+                    if let apiKey = configuration.apiKey, !apiKey.isEmpty {
+                        loggedError = loggedError.replacingOccurrences(of: apiKey, with: "[redacted]")
+                    }
+                    AIApprovalRuntimeLog.record(
+                        isCurrent ? "evaluation_failed_manual" : "evaluation_failed_superseded",
+                        sessionID: context.sessionID,
+                        toolUseID: toolUseID,
+                        details: "error=\(loggedError)"
+                    )
                     if isCurrent {
-                        aiApprovalStates[context.sessionID] = AIApprovalPresentationState(
-                            toolUseID: toolUseID,
-                            phase: .failed(message: error.localizedDescription)
+                        setAIApprovalState(
+                            AIApprovalPresentationState(
+                                toolUseID: toolUseID,
+                                phase: .failed(message: error.localizedDescription)
+                            ),
+                            for: context.sessionID
                         )
                     }
                 }
@@ -625,7 +707,13 @@ class SessionMonitor: ObservableObject {
         context: AIApprovalRequestContext,
         toolUseID: String
     ) async {
-        guard await isCurrentAIApproval(sessionID: context.sessionID, toolUseID: toolUseID) else {
+        let requestKey = AIApprovalRequestKey(sessionID: context.sessionID, toolUseID: toolUseID)
+        guard aiApprovalTasks[requestKey] != nil else {
+            AIApprovalRuntimeLog.record(
+                "result_superseded",
+                sessionID: context.sessionID,
+                toolUseID: toolUseID
+            )
             _ = aiApprovalService.record(
                 configuration: configuration,
                 context: context,
@@ -635,54 +723,116 @@ class SessionMonitor: ObservableObject {
             return
         }
 
-        let activeMode = AppSettings.shared.aiAutoApprovalMode
-        guard activeMode != .off else {
-            aiApprovalStates[context.sessionID] = nil
-            _ = aiApprovalService.record(
-                configuration: configuration,
-                context: context,
-                evaluation: evaluation,
-                outcome: .manualReview
-            )
-            return
-        }
-
         guard AIApprovalExecutionPolicy.shouldExecute(
-            mode: activeMode,
+            isEnabled: AppSettings.shared.aiApprovalEnabled,
+            manualRiskLevels: AppSettings.shared.aiApprovalManualRiskLevels,
             decision: evaluation.decision
         ) else {
+            guard await isCurrentAIApproval(sessionID: context.sessionID, toolUseID: toolUseID) else {
+                AIApprovalRuntimeLog.record(
+                    "manual_result_superseded",
+                    sessionID: context.sessionID,
+                    toolUseID: toolUseID,
+                    details: "risk=\(evaluation.decision.risk.rawValue)"
+                )
+                _ = aiApprovalService.record(
+                    configuration: configuration,
+                    context: context,
+                    evaluation: evaluation,
+                    outcome: .superseded
+                )
+                return
+            }
             let recordID = aiApprovalService.record(
                 configuration: configuration,
                 context: context,
                 evaluation: evaluation,
                 outcome: .manualReview
             )
-            let requestKey = AIApprovalRequestKey(sessionID: context.sessionID, toolUseID: toolUseID)
             aiApprovalAuditRecordIDs[requestKey] = recordID
-            aiApprovalStates[context.sessionID] = AIApprovalPresentationState(
+            AIApprovalRuntimeLog.record(
+                "manual_confirmation_required",
+                sessionID: context.sessionID,
                 toolUseID: toolUseID,
-                phase: .recommendation(
-                    decision: evaluation.decision.decision,
-                    risk: evaluation.decision.risk,
-                    reason: evaluation.decision.reason
-                )
+                details: "decision=\(evaluation.decision.decision.rawValue) risk=\(evaluation.decision.risk.rawValue)"
+            )
+            setAIApprovalState(
+                AIApprovalPresentationState(
+                    toolUseID: toolUseID,
+                    phase: .recommendation(
+                        decision: evaluation.decision.decision,
+                        risk: evaluation.decision.risk,
+                        reason: evaluation.decision.reason
+                    )
+                ),
+                for: context.sessionID
             )
             return
         }
 
-        aiApprovalStates[context.sessionID] = nil
         _ = aiApprovalService.record(
             configuration: configuration,
             context: context,
             evaluation: evaluation,
             outcome: evaluation.decision.decision == .approve ? .autoApproved : .autoDenied
         )
+        AIApprovalRuntimeLog.record(
+            "automatic_decision_ready",
+            sessionID: context.sessionID,
+            toolUseID: toolUseID,
+            details: "decision=\(evaluation.decision.decision.rawValue) risk=\(evaluation.decision.risk.rawValue)"
+        )
 
-        switch evaluation.decision.decision {
-        case .approve:
-            approvePermission(sessionId: context.sessionID)
-        case .deny:
-            denyPermission(sessionId: context.sessionID, reason: evaluation.decision.reason)
+        await executeAIApprovalDecision(
+            evaluation.decision,
+            sessionID: context.sessionID,
+            toolUseID: toolUseID
+        )
+    }
+
+    private func executeAIApprovalDecision(
+        _ decision: AIApprovalDecision,
+        sessionID: String,
+        toolUseID: String
+    ) async {
+        let session = await SessionStore.shared.session(for: sessionID)
+        if let session,
+           session.needsApprovalResponse,
+           Self.approvalToolUseId(for: session) == toolUseID {
+            let approvalDecision: ApprovalDecision = decision.decision == .approve
+                ? .approve
+                : .deny(reason: decision.reason)
+            await clearApprovalNotification(
+                for: session,
+                toolUseId: toolUseID,
+                decision: approvalDecision
+            )
+        }
+
+        if session.ingress == .remoteBridge {
+            RemoteConnectorManager.shared.respondToPermission(
+                toolUseId: toolUseID,
+                decision: decision.decision == .approve ? "approve" : "deny",
+                reason: decision.decision == .deny ? decision.reason : nil
+            )
+        } else {
+            HookSocketServer.shared.respondToPermission(
+                toolUseId: toolUseID,
+                decision: decision.decision == .approve ? "approve" : "deny",
+                reason: decision.decision == .deny ? decision.reason : nil
+            )
+        }
+        AIApprovalRuntimeLog.record(
+            "hook_response_sent",
+            sessionID: sessionID,
+            toolUseID: toolUseID,
+            details: "decision=\(decision.decision.rawValue) ingress=\(session?.ingress.rawValue ?? "unknown")"
+        )
+        if let session {
+            await TelemetryService.shared.recordAttentionResolved(
+                session,
+                resolution: decision.decision == .approve ? "approve" : "deny"
+            )
         }
     }
 
@@ -693,7 +843,7 @@ class SessionMonitor: ObservableObject {
         guard let session = await SessionStore.shared.session(for: sessionID),
               session.needsApprovalResponse,
               Self.approvalToolUseId(for: session) == toolUseID else {
-            aiApprovalStates[sessionID] = nil
+            setAIApprovalState(nil, for: sessionID)
             return false
         }
         return true
@@ -701,10 +851,35 @@ class SessionMonitor: ObservableObject {
 
     private func markAIApprovalHandledByUser(sessionId: String) {
         guard let state = aiApprovalStates.removeValue(forKey: sessionId) else { return }
+        refreshVisibleSessions()
         let requestKey = AIApprovalRequestKey(sessionID: sessionId, toolUseID: state.toolUseID)
+        AIApprovalRuntimeLog.record(
+            "handled_by_user",
+            sessionID: sessionId,
+            toolUseID: state.toolUseID
+        )
+        aiApprovalTasks.removeValue(forKey: requestKey)?.cancel()
         if let recordID = aiApprovalAuditRecordIDs.removeValue(forKey: requestKey) {
             aiApprovalService.updateAuditOutcome(id: recordID, outcome: .superseded)
         }
+    }
+
+    private func clearPreparedAIApprovalState(for event: HookEvent) {
+        guard let state = aiApprovalStates[event.sessionId],
+              state.isEvaluating,
+              event.toolUseId == nil || state.toolUseID == event.toolUseId else {
+            return
+        }
+        setAIApprovalState(nil, for: event.sessionId)
+    }
+
+    private func setAIApprovalState(_ state: AIApprovalPresentationState?, for sessionID: String) {
+        if let state {
+            aiApprovalStates[sessionID] = state
+        } else {
+            aiApprovalStates.removeValue(forKey: sessionID)
+        }
+        refreshVisibleSessions()
     }
 
     private func clearApprovalNotification(
@@ -1008,7 +1183,8 @@ class SessionMonitor: ObservableObject {
 
     private func refreshVisibleSessions() {
         let visibleSessions = filteredVisibleSessions(from: allSessions)
-        let pendingSessions = visibleSessions.filter { $0.needsAttention }
+        let pendingSessions = sessionsEligibleForAutomaticPresentation(from: visibleSessions)
+            .filter { $0.needsAttention }
         recordNewAttentionRequests(in: pendingSessions)
         if visibleSessions != instances {
             instances = visibleSessions

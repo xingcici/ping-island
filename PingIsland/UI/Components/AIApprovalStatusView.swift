@@ -46,7 +46,7 @@ struct AIApprovalStatusView: View {
     private var title: String {
         switch state.phase {
         case .evaluating:
-            return AppLocalization.string("智能审批判断中，可随时手动处理")
+            return AppLocalization.string("智能审批判断中")
         case .recommendation(let decision, let risk, _):
             let choice = AppLocalization.string(decision == .approve ? "建议允许" : "建议拒绝")
             return "\(choice) · \(AppLocalization.string(risk.title))"

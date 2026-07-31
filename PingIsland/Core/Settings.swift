@@ -458,7 +458,10 @@ final class AppSettingsStore: ObservableObject {
         static let openActiveSessionShortcutDisabled = "openActiveSessionShortcutDisabled"
         static let openSessionListShortcut = "openSessionListShortcut"
         static let openSessionListShortcutDisabled = "openSessionListShortcutDisabled"
-        static let aiAutoApprovalMode = "aiAutoApprovalMode"
+        static let aiApprovalEnabled = "aiApprovalEnabled"
+        static let aiApprovalManualRiskLevels = "aiApprovalManualRiskLevels"
+        static let aiApprovalShowEvaluatingHint = "aiApprovalShowEvaluatingHint"
+        static let legacyAIAutoApprovalMode = "aiAutoApprovalMode"
         static let aiApprovalBaseURL = "aiApprovalBaseURL"
         static let aiApprovalModel = "aiApprovalModel"
         static let aiApprovalPolicy = "aiApprovalPolicy"
@@ -951,11 +954,34 @@ final class AppSettingsStore: ObservableObject {
         }
     }
 
-    @Published var aiAutoApprovalMode: AIAutoApprovalMode {
+    @Published var aiApprovalEnabled: Bool {
         didSet {
             guard !isBootstrapping else { return }
-            defaults.set(aiAutoApprovalMode.rawValue, forKey: Keys.aiAutoApprovalMode)
-            recordTelemetrySettingChange(key: Keys.aiAutoApprovalMode, value: aiAutoApprovalMode.rawValue)
+            defaults.set(aiApprovalEnabled, forKey: Keys.aiApprovalEnabled)
+            recordTelemetrySettingChange(key: Keys.aiApprovalEnabled, value: aiApprovalEnabled.description)
+        }
+    }
+
+    @Published var aiApprovalManualRiskLevels: Set<AIApprovalRisk> {
+        didSet {
+            guard !isBootstrapping else { return }
+            let values = aiApprovalManualRiskLevels.map(\.rawValue).sorted()
+            defaults.set(values, forKey: Keys.aiApprovalManualRiskLevels)
+            recordTelemetrySettingChange(
+                key: Keys.aiApprovalManualRiskLevels,
+                value: values.joined(separator: ",")
+            )
+        }
+    }
+
+    @Published var aiApprovalShowEvaluatingHint: Bool {
+        didSet {
+            guard !isBootstrapping else { return }
+            defaults.set(aiApprovalShowEvaluatingHint, forKey: Keys.aiApprovalShowEvaluatingHint)
+            recordTelemetrySettingChange(
+                key: Keys.aiApprovalShowEvaluatingHint,
+                value: aiApprovalShowEvaluatingHint.description
+            )
         }
     }
 
@@ -1592,9 +1618,32 @@ final class AppSettingsStore: ObservableObject {
         _mascotOverrides = Published(initialValue: Self.sanitizedMascotOverrides(mascotOverrideRaw))
         _openActiveSessionShortcut = Published(initialValue: openActiveSessionShortcut)
         _openSessionListShortcut = Published(initialValue: openSessionListShortcut)
-        _aiAutoApprovalMode = Published(initialValue: AIAutoApprovalMode(
-            rawValue: defaults.string(forKey: Keys.aiAutoApprovalMode) ?? ""
-        ) ?? .off)
+        let legacyAIApprovalMode = AIAutoApprovalMode(
+            rawValue: defaults.string(forKey: Keys.legacyAIAutoApprovalMode) ?? ""
+        ) ?? .off
+        let aiApprovalEnabled = Self.boolValue(
+            from: defaults,
+            key: Keys.aiApprovalEnabled,
+            exists: persistedKeys.contains(Keys.aiApprovalEnabled),
+            default: legacyAIApprovalMode != .off
+        )
+        let defaultManualRiskLevels: Set<AIApprovalRisk> = legacyAIApprovalMode == .fullAuto
+            ? []
+            : [.medium, .high]
+        let persistedManualRiskLevels = defaults.stringArray(forKey: Keys.aiApprovalManualRiskLevels)
+            .map { Set($0.compactMap(AIApprovalRisk.init(rawValue:))) }
+        _aiApprovalEnabled = Published(initialValue: aiApprovalEnabled)
+        _aiApprovalManualRiskLevels = Published(
+            initialValue: persistedKeys.contains(Keys.aiApprovalManualRiskLevels)
+                ? (persistedManualRiskLevels ?? [])
+                : defaultManualRiskLevels
+        )
+        _aiApprovalShowEvaluatingHint = Published(initialValue: Self.boolValue(
+            from: defaults,
+            key: Keys.aiApprovalShowEvaluatingHint,
+            exists: persistedKeys.contains(Keys.aiApprovalShowEvaluatingHint),
+            default: false
+        ))
         _aiApprovalBaseURL = Published(initialValue: defaults.string(forKey: Keys.aiApprovalBaseURL)
             ?? "https://api.openai.com/v1")
         _aiApprovalModel = Published(initialValue: defaults.string(forKey: Keys.aiApprovalModel) ?? "")

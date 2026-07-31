@@ -737,7 +737,10 @@ struct DetachedIslandPanelView: View {
         }
         return MascotStatus.closedNotchStatus(
             representativePhase: representativeSession?.phase,
-            hasPendingPermission: sortedSessions.contains { $0.needsApprovalResponse },
+            hasPendingPermission: sortedSessions.contains {
+                sessionMonitor.shouldPresentApproval(for: $0)
+                    || sessionMonitor.shouldPresentAIApprovalEvaluatingHint(for: $0)
+            },
             hasHumanIntervention: sortedSessions.contains { $0.intervention != nil }
         )
     }

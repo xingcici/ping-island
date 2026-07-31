@@ -73,7 +73,7 @@ struct NotchView: View {
 
     /// Whether any tracked session has a pending permission request
     private var hasPendingPermission: Bool {
-        sessionMonitor.instances.contains { $0.needsApprovalResponse }
+        sessionMonitor.instances.contains { sessionMonitor.shouldPresentApproval(for: $0) }
     }
 
     /// Whether any session needs explicit human intervention (for example multi-choice questions).
@@ -85,7 +85,7 @@ struct NotchView: View {
 
     /// Whether any session requires a user decision right now.
     private var hasManualAttentionIndicator: Bool {
-        sessionMonitor.instances.contains {
+        sessionMonitor.sessionsEligibleForManualAttention(from: sessionMonitor.instances).contains {
             $0.needsPromptNotification
         }
     }
@@ -413,13 +413,23 @@ struct NotchView: View {
             }
             .onReceive(sessionMonitor.$instances) { instances in
                 viewModel.setManualAttentionActive(
-                    instances.contains { $0.needsPromptNotification }
+                    sessionMonitor.sessionsEligibleForManualAttention(from: instances)
+                        .contains { $0.needsPromptNotification }
                 )
                 handleProcessingChange()
                 handleSessionSoundTransitions(instances)
                 handleManualAttentionChange(instances)
                 handleCompletedReadyChange(instances)
                 handleCompletionNotificationChange(instances)
+            }
+            .onReceive(sessionMonitor.$aiApprovalStates) { _ in
+                let instances = sessionMonitor.instances
+                viewModel.setManualAttentionActive(
+                    sessionMonitor.sessionsEligibleForManualAttention(from: instances)
+                        .contains { $0.needsPromptNotification }
+                )
+                handleSessionSoundTransitions(instances)
+                handleManualAttentionChange(instances)
             }
     }
 
@@ -1011,13 +1021,15 @@ struct NotchView: View {
     }
 
     private func primeStartupPresentationState(_ instances: [SessionState]) {
-        previousPendingIds = Set(instances.filter(\.needsAttention).map(\.stableId))
+        let automaticallyPresentableInstances = sessionMonitor.sessionsEligibleForAutomaticPresentation(from: instances)
+        let manuallyPresentableInstances = sessionMonitor.sessionsEligibleForManualAttention(from: instances)
+        previousPendingIds = Set(automaticallyPresentableInstances.filter(\.needsAttention).map(\.stableId))
         previousCompletedReadyIds = Set(
             instances
                 .filter { SessionCompletionStateEvaluator.isCompletedReadySession($0) }
                 .map(\.stableId)
         )
-        _ = manualAttentionTracker.consumeNewAttentionSession(from: instances)
+        _ = manualAttentionTracker.consumeNewAttentionSession(from: manuallyPresentableInstances)
         primeCompletionNotificationTracking(instances)
     }
 
@@ -1057,12 +1069,13 @@ struct NotchView: View {
     }
 
     private func handleManualAttentionChange(_ instances: [SessionState]) {
-        guard let targetSession = manualAttentionTracker.consumeNewAttentionSession(from: instances) else {
-            scheduleDelayedManualAttentionPresentationIfNeeded(instances)
+        let presentableInstances = sessionMonitor.sessionsEligibleForManualAttention(from: instances)
+        guard let targetSession = manualAttentionTracker.consumeNewAttentionSession(from: presentableInstances) else {
+            scheduleDelayedManualAttentionPresentationIfNeeded(presentableInstances)
             return
         }
 
-        scheduleDelayedManualAttentionPresentationIfNeeded(instances)
+        scheduleDelayedManualAttentionPresentationIfNeeded(presentableInstances)
 
         if areReminderNotificationsSuppressed {
             return
@@ -1450,6 +1463,7 @@ struct NotchView: View {
     }
 
     private func handleSessionSoundTransitions(_ instances: [SessionState]) {
+        let instances = sessionMonitor.sessionsEligibleForManualAttention(from: instances)
         if !hasPrimedSoundTransitions {
             previousProcessingIds = Set(
                 instances

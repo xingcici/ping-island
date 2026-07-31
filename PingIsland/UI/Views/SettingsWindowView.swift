@@ -2281,6 +2281,7 @@ private struct SettingsPanelContentView: View {
     @State private var aiApprovalConnectionStatus: String?
     @State private var aiApprovalConnectionSucceeded = false
     @State private var isTestingAIApprovalConnection = false
+    @State private var aiApprovalAuditExportStatus: String?
 
     var body: some View {
         ZStack {
@@ -3440,32 +3441,77 @@ private struct SettingsPanelContentView: View {
     private var aiApprovalContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsSectionCard(title: "自动处理策略") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(appLocalized: "审批模式")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.9))
+                SettingsToggleLine(
+                    title: "启用智能审批",
+                    subtitle: "模型判断期间保持静默；只有选中的风险等级或模型判断失败时才提醒你确认。",
+                    isOn: $settings.aiApprovalEnabled
+                )
 
-                    Picker("", selection: $settings.aiAutoApprovalMode) {
-                        ForEach(AIAutoApprovalMode.allCases) { mode in
-                            Text(appLocalized: mode.title).tag(mode)
+                if settings.aiApprovalEnabled {
+                    SettingsLineDivider()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(appLocalized: "需要人工确认的风险等级")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.9))
+
+                        HStack(spacing: 8) {
+                            ForEach(AIApprovalRisk.allCases, id: \.self) { risk in
+                                let isSelected = settings.aiApprovalManualRiskLevels.contains(risk)
+                                Button {
+                                    toggleAIApprovalManualRisk(risk)
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                            .font(.system(size: 11, weight: .semibold))
+                                        Text(appLocalized: risk.title)
+                                            .font(.system(size: 12, weight: .semibold))
+                                    }
+                                    .foregroundColor(isSelected ? .black : .white.opacity(0.68))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(
+                                        isSelected ? TerminalColors.amber : Color.white.opacity(0.08),
+                                        in: Capsule()
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityValue(Text(appLocalized: isSelected ? "已选择" : "未选择"))
+                            }
+                        }
+
+                        Text(appLocalized: "选中的等级由你确认；未选中的等级会自动执行模型给出的允许或拒绝。")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.55))
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Toggle(isOn: $settings.aiApprovalShowEvaluatingHint) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(appLocalized: "判断中显示轻量提示")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.86))
+                                Text(appLocalized: "开启后只显示一个可爱的处理中提示，不提供审批按钮，也不播放人工确认提示音。")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.5))
+                            }
+                        }
+                        .toggleStyle(.switch)
+                        .settingsCompactSwitch()
+
+                        if settings.aiApprovalManualRiskLevels.isEmpty {
+                            Label("未选择任何等级，所有模型决定都将自动执行", systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(TerminalColors.amber)
+                        }
+
+                        if settings.aiApprovalModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Label("填写模型名称后才会开始智能审批", systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(TerminalColors.amber)
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-
-                    Text(appLocalized: settings.aiAutoApprovalMode.subtitle)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.55))
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if settings.aiAutoApprovalMode != .off,
-                       settings.aiApprovalModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Label("填写模型名称后才会开始智能审批", systemImage: "exclamationmark.triangle.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(TerminalColors.amber)
-                    }
+                    .padding(16)
                 }
-                .padding(16)
             }
 
             SettingsSectionCard(title: "OpenAI 兼容接口") {
@@ -3586,10 +3632,10 @@ private struct SettingsPanelContentView: View {
 
             SettingsSectionCard(title: "数据与审计") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Label("每次判断会发送脱敏后的 Hook 内容，以及最近 6 条用户/助手文本。", systemImage: "lock.shield")
+                    Label("每次判断会发送完整 Hook 内容和全部用户/助手文本。", systemImage: "doc.text.magnifyingglass")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.white.opacity(0.62))
-                    Text(appLocalized: "审计仅保存在本机 30 天，不保存完整对话、完整工具参数或 API Key。模型服务的数据保留策略由你配置的服务决定。")
+                    Text(appLocalized: "审计在本机保留 30 天；导出包含完整会话 ID、上下文和工具参数，但不包含 API Key。模型服务的数据保留策略由你配置的服务决定。")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.white.opacity(0.5))
                         .fixedSize(horizontal: false, vertical: true)
@@ -3605,11 +3651,26 @@ private struct SettingsPanelContentView: View {
                             aiApprovalAuditRow(record)
                         }
 
-                        Button("清空审计记录", role: .destructive) {
-                            aiApprovalAudit.clear()
+                        HStack(spacing: 8) {
+                            Button("导出审计记录") {
+                                exportAIApprovalAudit()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+
+                            Button("清空审计记录", role: .destructive) {
+                                aiApprovalAudit.clear()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+
+                            if let aiApprovalAuditExportStatus {
+                                Text(aiApprovalAuditExportStatus)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.5))
+                                    .lineLimit(1)
+                            }
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                         .padding(.top, 4)
                     }
                 }
@@ -3664,6 +3725,19 @@ private struct SettingsPanelContentView: View {
                             .foregroundColor(.white.opacity(0.45))
                     }
                 }
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(record.sessionID, forType: .string)
+                } label: {
+                    Label(
+                        AppLocalization.format("会话 %@", String(record.sessionID.prefix(12))),
+                        systemImage: "doc.on.doc"
+                    )
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.42))
+                }
+                .buttonStyle(.plain)
+                .help(record.sessionID)
                 if !record.toolSummary.isEmpty {
                     Text(record.toolSummary)
                         .font(.system(size: 11, design: .monospaced))
@@ -3692,7 +3766,8 @@ private struct SettingsPanelContentView: View {
         let enteredKey = aiApprovalAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = enteredKey.isEmpty ? storedKey : enteredKey
         let configuration = AIApprovalConfiguration(
-            mode: settings.aiAutoApprovalMode,
+            isEnabledByUser: settings.aiApprovalEnabled,
+            manualRiskLevels: settings.aiApprovalManualRiskLevels,
             baseURL: settings.aiApprovalBaseURL,
             model: settings.aiApprovalModel,
             policy: settings.aiApprovalPolicy,
@@ -3712,6 +3787,34 @@ private struct SettingsPanelContentView: View {
                 aiApprovalConnectionStatus = AppLocalization.string(error.localizedDescription)
                 aiApprovalConnectionSucceeded = false
             }
+        }
+    }
+
+    private func toggleAIApprovalManualRisk(_ risk: AIApprovalRisk) {
+        var levels = settings.aiApprovalManualRiskLevels
+        if levels.contains(risk) {
+            levels.remove(risk)
+        } else {
+            levels.insert(risk)
+        }
+        settings.aiApprovalManualRiskLevels = levels
+    }
+
+    private func exportAIApprovalAudit() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        panel.nameFieldStringValue = "PingIsland-AI-Approval-Audit-\(timestamp).json"
+
+        guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
+        do {
+            try aiApprovalAudit.exportData().write(to: destinationURL, options: .atomic)
+            aiApprovalAuditExportStatus = AppLocalization.format("已导出到 %@", destinationURL.lastPathComponent)
+        } catch {
+            aiApprovalAuditExportStatus = AppLocalization.format("导出失败：%@", error.localizedDescription)
         }
     }
 

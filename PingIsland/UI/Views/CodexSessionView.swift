@@ -29,7 +29,8 @@ struct CodexSessionView: View {
 
                 summaryCard
 
-                if let intervention = session.intervention {
+                if let intervention = session.intervention,
+                   intervention.kind != .approval || sessionMonitor.shouldPresentApproval(for: session) {
                     interventionCard(intervention)
                 } else {
                     CodexThreadInspectorView(

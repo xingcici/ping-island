@@ -1,29 +1,31 @@
 import Combine
 import Foundation
+import os.log
 import Security
 
-enum AIAutoApprovalMode: String, CaseIterable, Identifiable, Sendable {
+enum AIApprovalRuntimeLog {
+    private static let logger = Logger(
+        subsystem: "com.wudanwu.pingisland",
+        category: "AIApproval"
+    )
+
+    nonisolated static func record(
+        _ stage: String,
+        sessionID: String,
+        toolUseID: String,
+        details: String = ""
+    ) {
+        logger.info(
+            "stage=\(stage, privacy: .public) sessionID=\(sessionID, privacy: .public) toolUseID=\(toolUseID, privacy: .public) \(details, privacy: .public)"
+        )
+    }
+}
+
+enum AIAutoApprovalMode: String, Sendable {
     case off
     case lowRisk
     case fullAuto
 
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .off: return "关闭"
-        case .lowRisk: return "仅低风险自动"
-        case .fullAuto: return "全自动"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .off: return "所有审批继续由你手动处理"
-        case .lowRisk: return "只自动执行模型判定为低风险的允许；其他结果转人工"
-        case .fullAuto: return "自动执行模型给出的允许或拒绝"
-        }
-    }
 }
 
 enum AIApprovalDecisionChoice: String, Codable, Sendable {
@@ -31,7 +33,7 @@ enum AIApprovalDecisionChoice: String, Codable, Sendable {
     case deny
 }
 
-enum AIApprovalRisk: String, Codable, CaseIterable, Sendable {
+enum AIApprovalRisk: String, Codable, CaseIterable, Hashable, Sendable {
     case low
     case medium
     case high
@@ -69,10 +71,20 @@ enum AIApprovalExecutionOutcome: String, Codable, Sendable {
     }
 }
 
-struct AIApprovalAuditRecord: Codable, Identifiable, Equatable, Sendable {
+struct AIApprovalAuditContext: Codable, Sendable {
+    let toolUseID: String?
+    let cwd: String
+    let interventionTitle: String
+    let interventionMessage: String
+    let toolInput: [String: AnyCodable]
+    let conversation: [AIApprovalRequestContext.ConversationEntry]
+}
+
+struct AIApprovalAuditRecord: Codable, Identifiable, Sendable {
     let id: UUID
     let createdAt: Date
     let sessionID: String
+    let toolUseID: String?
     let provider: String
     let client: String
     let model: String
@@ -84,6 +96,7 @@ struct AIApprovalAuditRecord: Codable, Identifiable, Equatable, Sendable {
     let latencyMilliseconds: Int?
     let outcome: AIApprovalExecutionOutcome
     let error: String?
+    let context: AIApprovalAuditContext?
 }
 
 enum AIApprovalPresentationPhase: Equatable, Sendable {
@@ -95,28 +108,35 @@ enum AIApprovalPresentationPhase: Equatable, Sendable {
 struct AIApprovalPresentationState: Equatable, Sendable {
     let toolUseID: String
     let phase: AIApprovalPresentationPhase
+
+    var isEvaluating: Bool {
+        if case .evaluating = phase { return true }
+        return false
+    }
 }
 
 struct AIApprovalConfiguration: Equatable, Sendable {
-    let mode: AIAutoApprovalMode
+    let isEnabledByUser: Bool
+    let manualRiskLevels: Set<AIApprovalRisk>
     let baseURL: String
     let model: String
     let policy: String
     let apiKey: String?
 
     var isEnabled: Bool {
-        mode != .off && !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        isEnabledByUser && !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
 struct AIApprovalRequestContext: Sendable {
-    struct ConversationEntry: Equatable, Sendable {
+    struct ConversationEntry: Codable, Equatable, Sendable {
         let role: String
         let content: String
     }
 
     let sessionID: String
+    let toolUseID: String
     let provider: String
     let client: String
     let cwd: String
@@ -134,17 +154,11 @@ struct AIApprovalEvaluation: Sendable {
 
 enum AIApprovalExecutionPolicy {
     nonisolated static func shouldExecute(
-        mode: AIAutoApprovalMode,
+        isEnabled: Bool,
+        manualRiskLevels: Set<AIApprovalRisk>,
         decision: AIApprovalDecision
     ) -> Bool {
-        switch mode {
-        case .off:
-            return false
-        case .lowRisk:
-            return decision.decision == .approve && decision.risk == .low
-        case .fullAuto:
-            return true
-        }
+        isEnabled && !manualRiskLevels.contains(decision.risk)
     }
 }
 
@@ -233,6 +247,42 @@ protocol AIApprovalHTTPTransport: Sendable {
 }
 
 extension URLSession: AIApprovalHTTPTransport {}
+
+actor AIApprovalConcurrencyLimiter {
+    private let limit: Int
+    private var activeCount = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int = 4) {
+        self.limit = max(1, limit)
+    }
+
+    func run<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async rethrows -> T {
+        await acquire()
+        defer { release() }
+        return try await operation()
+    }
+
+    private func acquire() async {
+        if activeCount < limit {
+            activeCount += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            activeCount = max(0, activeCount - 1)
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
 
 actor OpenAICompatibleApprovalClient {
     private struct ChatRequest: Encodable {
@@ -368,14 +418,31 @@ actor OpenAICompatibleApprovalClient {
         )
         request.httpBody = try JSONEncoder().encode(body)
 
-        let response: (Data, URLResponse)
-        do {
-            response = try await transport.data(for: request)
-        } catch let error as URLError where error.code == .timedOut {
-            throw AIApprovalServiceError.timedOut
+        var response: (Data, URLResponse)?
+        for attempt in 0..<3 {
+            do {
+                let candidate = try await transport.data(for: request)
+                if let http = candidate.1 as? HTTPURLResponse,
+                   Self.isRetryableStatus(http.statusCode),
+                   attempt < 2 {
+                    AIApprovalRuntimeLog.record(
+                        "model_retry",
+                        sessionID: context.sessionID,
+                        toolUseID: context.toolUseID,
+                        details: "attempt=\(attempt + 1) status=\(http.statusCode)"
+                    )
+                    try await Task.sleep(for: .milliseconds(250 * (1 << attempt)))
+                    continue
+                }
+                response = candidate
+                break
+            } catch let error as URLError where error.code == .timedOut {
+                throw AIApprovalServiceError.timedOut
+            }
         }
 
-        guard let http = response.1 as? HTTPURLResponse else {
+        guard let response,
+              let http = response.1 as? HTTPURLResponse else {
             throw AIApprovalServiceError.invalidResponse
         }
         guard (200..<300).contains(http.statusCode) else {
@@ -393,8 +460,12 @@ actor OpenAICompatibleApprovalClient {
         return AIApprovalDecision(
             decision: decision.decision,
             risk: decision.risk,
-            reason: String(decision.reason.trimmingCharacters(in: .whitespacesAndNewlines).prefix(500))
+            reason: decision.reason.trimmingCharacters(in: .whitespacesAndNewlines)
         )
+    }
+
+    private static func isRetryableStatus(_ status: Int) -> Bool {
+        status == 429 || status == 500 || status == 502 || status == 503 || status == 504
     }
 
     static func chatCompletionsURL(from rawValue: String) throws -> URL {
@@ -474,6 +545,7 @@ actor OpenAICompatibleApprovalClient {
         let conversation = context.recentConversation.map { ["role": $0.role, "content": $0.content] }
         let toolInput = context.toolInput.mapValues { $0.value }
         let payload: [String: Any] = [
+            "tool_use_id": context.toolUseID,
             "provider": context.provider,
             "client": context.client,
             "cwd": context.cwd,
@@ -508,32 +580,34 @@ actor OpenAICompatibleApprovalClient {
               let message = error["message"] as? String else {
             return ""
         }
-        return String(message.prefix(300))
+        return message
     }
 }
 
 enum AIApprovalContextBuilder {
-    private static let sensitiveFragments = [
-        "password", "passwd", "secret", "token", "authorization", "api_key", "apikey", "credential"
-    ]
-
     static func makeContext(event: HookEvent, session: SessionState) -> AIApprovalRequestContext? {
-        guard let intervention = session.intervention,
-              intervention.kind == .approval,
-              let toolUseID = SessionMonitor.approvalToolUseId(for: session),
+        guard let toolUseID = event.toolUseId ?? SessionMonitor.approvalToolUseId(for: session),
               !toolUseID.isEmpty else {
             return nil
         }
+        let intervention = session.intervention
+        let matchesCurrentIntervention = SessionMonitor.approvalToolUseId(for: session) == toolUseID
+        let toolName = event.tool ?? session.pendingToolName ?? "unknown"
 
         return AIApprovalRequestContext(
             sessionID: session.sessionId,
+            toolUseID: toolUseID,
             provider: session.provider.rawValue,
             client: session.interactionDisplayName,
-            cwd: bounded(session.cwd, limit: 2_000),
-            toolName: bounded(event.tool ?? session.pendingToolName ?? "unknown", limit: 300),
-            interventionTitle: bounded(intervention.title, limit: 500),
-            interventionMessage: bounded(intervention.message, limit: 2_000),
-            toolInput: redactedToolInput(event.toolInput ?? session.activePermission?.toolInput ?? [:]),
+            cwd: session.cwd,
+            toolName: toolName,
+            interventionTitle: matchesCurrentIntervention
+                ? (intervention?.title ?? "Approve \(toolName)")
+                : "Approve \(toolName)",
+            interventionMessage: matchesCurrentIntervention
+                ? (intervention?.message ?? event.message ?? "")
+                : (event.message ?? ""),
+            toolInput: event.toolInput ?? session.activePermission?.toolInput ?? [:],
             recentConversation: recentConversation(from: session.chatItems)
         )
     }
@@ -542,17 +616,14 @@ enum AIApprovalContextBuilder {
         let preferredKeys = ["command", "path", "file_path", "description", "url", "query"]
         for key in preferredKeys {
             if let value = context.toolInput[key]?.value as? String, !value.isEmpty {
-                return DiagnosticsLogRedactor.redactedPlainText(value, limit: 500)
+                return String(value.prefix(500))
             }
         }
-        return DiagnosticsLogRedactor.redactedPlainText(context.interventionMessage, limit: 500)
+        return String(context.interventionMessage.prefix(500))
     }
 
     private static func recentConversation(from items: [ChatHistoryItem]) -> [AIApprovalRequestContext.ConversationEntry] {
-        var remainingCharacters = 8_000
-        var reversedEntries: [AIApprovalRequestContext.ConversationEntry] = []
-
-        for item in items.reversed() {
+        items.compactMap { item in
             let role: String
             let content: String
             switch item.type {
@@ -563,63 +634,10 @@ enum AIApprovalContextBuilder {
                 role = "assistant"
                 content = text
             case .toolCall, .thinking, .interrupted:
-                continue
+                return nil
             }
-
-            let value = bounded(content, limit: min(2_000, remainingCharacters))
-            guard !value.isEmpty else { continue }
-            reversedEntries.append(.init(role: role, content: value))
-            remainingCharacters -= value.count
-            if reversedEntries.count == 6 || remainingCharacters <= 0 { break }
+            return .init(role: role, content: content)
         }
-
-        return reversedEntries.reversed()
-    }
-
-    private static func redactedToolInput(_ input: [String: AnyCodable]) -> [String: AnyCodable] {
-        var remainingCharacters = 8_000
-        var result: [String: AnyCodable] = [:]
-        for key in input.keys.sorted() where remainingCharacters > 0 {
-            guard let value = input[key] else { continue }
-            let normalizedKey = key.lowercased()
-            if sensitiveFragments.contains(where: normalizedKey.contains) {
-                result[key] = AnyCodable("<redacted>")
-                continue
-            }
-            let sanitized = sanitize(value.value, remainingCharacters: &remainingCharacters)
-            result[key] = AnyCodable(sanitized)
-        }
-        return result
-    }
-
-    private static func sanitize(_ value: Any, remainingCharacters: inout Int) -> Any {
-        if let string = value as? String {
-            let boundedValue = bounded(string, limit: min(2_000, remainingCharacters))
-            remainingCharacters -= boundedValue.count
-            return boundedValue
-        }
-        if let dictionary = value as? [String: Any] {
-            return dictionary.reduce(into: [String: Any]()) { partial, entry in
-                let normalizedKey = entry.key.lowercased()
-                partial[entry.key] = sensitiveFragments.contains(where: normalizedKey.contains)
-                    ? "<redacted>"
-                    : sanitize(entry.value, remainingCharacters: &remainingCharacters)
-            }
-        }
-        if let dictionary = value as? [String: AnyCodable] {
-            return sanitize(dictionary.mapValues(\.value), remainingCharacters: &remainingCharacters)
-        }
-        if let array = value as? [Any] {
-            return array.prefix(50).map { sanitize($0, remainingCharacters: &remainingCharacters) }
-        }
-        return value
-    }
-
-    private static func bounded(_ value: String, limit: Int) -> String {
-        guard limit > 0 else { return "" }
-        let sanitized = SessionTextSanitizer.sanitizedDisplayText(value) ?? ""
-        guard sanitized.count > limit else { return sanitized }
-        return String(sanitized.prefix(limit)) + "…"
     }
 }
 
@@ -653,6 +671,7 @@ final class AIApprovalAuditStore: ObservableObject {
             id: current.id,
             createdAt: current.createdAt,
             sessionID: current.sessionID,
+            toolUseID: current.toolUseID,
             provider: current.provider,
             client: current.client,
             model: current.model,
@@ -663,7 +682,8 @@ final class AIApprovalAuditStore: ObservableObject {
             reason: current.reason,
             latencyMilliseconds: current.latencyMilliseconds,
             outcome: outcome,
-            error: current.error
+            error: current.error,
+            context: current.context
         )
         persist()
     }
@@ -671,6 +691,13 @@ final class AIApprovalAuditStore: ObservableObject {
     func clear() {
         records = []
         try? fileManager.removeItem(at: fileURL)
+    }
+
+    func exportData() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(records)
     }
 
     func prune(now: Date = Date()) {
@@ -711,20 +738,24 @@ final class AIApprovalDecisionService {
     private let client: OpenAICompatibleApprovalClient
     private let credentialStore: any AIApprovalCredentialStoring
     private let auditStore: AIApprovalAuditStore
+    private let concurrencyLimiter: AIApprovalConcurrencyLimiter
 
     init(
         client: OpenAICompatibleApprovalClient = OpenAICompatibleApprovalClient(),
         credentialStore: any AIApprovalCredentialStoring = AIApprovalCredentialStore(),
-        auditStore: AIApprovalAuditStore? = nil
+        auditStore: AIApprovalAuditStore? = nil,
+        concurrencyLimiter: AIApprovalConcurrencyLimiter = AIApprovalConcurrencyLimiter()
     ) {
         self.client = client
         self.credentialStore = credentialStore
         self.auditStore = auditStore ?? .shared
+        self.concurrencyLimiter = concurrencyLimiter
     }
 
     func configuration(from settings: AppSettingsStore) -> AIApprovalConfiguration {
         AIApprovalConfiguration(
-            mode: settings.aiAutoApprovalMode,
+            isEnabledByUser: settings.aiApprovalEnabled,
+            manualRiskLevels: settings.aiApprovalManualRiskLevels,
             baseURL: settings.aiApprovalBaseURL,
             model: settings.aiApprovalModel,
             policy: settings.aiApprovalPolicy,
@@ -736,7 +767,28 @@ final class AIApprovalDecisionService {
         configuration: AIApprovalConfiguration,
         context: AIApprovalRequestContext
     ) async throws -> AIApprovalEvaluation {
-        try await client.decide(configuration: configuration, context: context)
+        AIApprovalRuntimeLog.record(
+            "model_queued",
+            sessionID: context.sessionID,
+            toolUseID: context.toolUseID,
+            details: "model=\(configuration.model)"
+        )
+        return try await concurrencyLimiter.run { [client] in
+            AIApprovalRuntimeLog.record(
+                "model_started",
+                sessionID: context.sessionID,
+                toolUseID: context.toolUseID,
+                details: "model=\(configuration.model)"
+            )
+            let evaluation = try await client.decide(configuration: configuration, context: context)
+            AIApprovalRuntimeLog.record(
+                "model_completed",
+                sessionID: context.sessionID,
+                toolUseID: context.toolUseID,
+                details: "decision=\(evaluation.decision.decision.rawValue) risk=\(evaluation.decision.risk.rawValue) latencyMs=\(evaluation.latencyMilliseconds)"
+            )
+            return evaluation
+        }
     }
 
     @discardableResult
@@ -757,6 +809,7 @@ final class AIApprovalDecisionService {
             id: id,
             createdAt: Date(),
             sessionID: context.sessionID,
+            toolUseID: context.toolUseID,
             provider: context.provider,
             client: context.client,
             model: configuration.model,
@@ -764,12 +817,18 @@ final class AIApprovalDecisionService {
             toolSummary: AIApprovalContextBuilder.auditSummary(from: context),
             decision: evaluation?.decision.decision,
             risk: evaluation?.decision.risk,
-            reason: evaluation.map {
-                DiagnosticsLogRedactor.redactedPlainText($0.decision.reason, limit: 500)
-            },
+            reason: evaluation?.decision.reason,
             latencyMilliseconds: evaluation?.latencyMilliseconds,
             outcome: outcome,
-            error: errorMessage.map { DiagnosticsLogRedactor.redactedPlainText($0, limit: 500) }
+            error: errorMessage,
+            context: AIApprovalAuditContext(
+                toolUseID: context.toolUseID,
+                cwd: context.cwd,
+                interventionTitle: context.interventionTitle,
+                interventionMessage: context.interventionMessage,
+                toolInput: context.toolInput,
+                conversation: context.recentConversation
+            )
         ))
         return id
     }
@@ -777,6 +836,7 @@ final class AIApprovalDecisionService {
     func testConnection(configuration: AIApprovalConfiguration) async throws -> AIApprovalEvaluation {
         let context = AIApprovalRequestContext(
             sessionID: "connection-test",
+            toolUseID: "connection-test",
             provider: "test",
             client: "Ping Island",
             cwd: "/tmp/ping-island-connection-test",

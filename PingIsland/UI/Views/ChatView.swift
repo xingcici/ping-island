@@ -129,7 +129,8 @@ struct ChatView: View {
                             insertion: .opacity.combined(with: .move(edge: .bottom)),
                             removal: .opacity
                         ))
-                } else if let tool = approvalTool {
+                } else if let tool = approvalTool,
+                          sessionMonitor.shouldPresentApproval(for: session) {
                     approvalBar(tool: tool)
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .move(edge: .bottom)),

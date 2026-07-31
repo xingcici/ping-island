@@ -683,7 +683,7 @@ struct InstanceRow: View {
 
     /// Whether we're showing the approval UI
     private var isWaitingForApproval: Bool {
-        session.needsApprovalResponse
+        session.needsApprovalResponse && aiApprovalState?.isEvaluating != true
     }
 
     /// Whether the pending tool requires interactive input (not just approve/deny)

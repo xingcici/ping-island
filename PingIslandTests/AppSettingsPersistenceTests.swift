@@ -217,21 +217,41 @@ final class AppSettingsPersistenceTests: XCTestCase {
         let defaults = makeDefaults()
         let store = makeStore(defaults: defaults)
 
-        XCTAssertEqual(store.aiAutoApprovalMode, .off)
+        XCTAssertFalse(store.aiApprovalEnabled)
+        XCTAssertEqual(store.aiApprovalManualRiskLevels, [.medium, .high])
+        XCTAssertFalse(store.aiApprovalShowEvaluatingHint)
         XCTAssertEqual(store.aiApprovalBaseURL, "https://api.openai.com/v1")
         XCTAssertTrue(store.aiApprovalModel.isEmpty)
         XCTAssertEqual(store.aiApprovalPolicy, AppSettingsStore.defaultAIApprovalPolicy)
 
-        store.aiAutoApprovalMode = .lowRisk
+        store.aiApprovalEnabled = true
+        store.aiApprovalManualRiskLevels = [.low, .high]
+        store.aiApprovalShowEvaluatingHint = true
         store.aiApprovalBaseURL = "http://localhost:11434/v1"
         store.aiApprovalModel = "local-model"
         store.aiApprovalPolicy = "Only approve repository reads."
 
         let reloaded = makeStore(defaults: defaults)
-        XCTAssertEqual(reloaded.aiAutoApprovalMode, .lowRisk)
+        XCTAssertTrue(reloaded.aiApprovalEnabled)
+        XCTAssertEqual(reloaded.aiApprovalManualRiskLevels, [.low, .high])
+        XCTAssertTrue(reloaded.aiApprovalShowEvaluatingHint)
         XCTAssertEqual(reloaded.aiApprovalBaseURL, "http://localhost:11434/v1")
         XCTAssertEqual(reloaded.aiApprovalModel, "local-model")
         XCTAssertEqual(reloaded.aiApprovalPolicy, "Only approve repository reads.")
+    }
+
+    func testAIApprovalMigratesLegacyModes() {
+        let lowRiskDefaults = makeDefaults()
+        lowRiskDefaults.set("lowRisk", forKey: "aiAutoApprovalMode")
+        let lowRiskStore = makeStore(defaults: lowRiskDefaults)
+        XCTAssertTrue(lowRiskStore.aiApprovalEnabled)
+        XCTAssertEqual(lowRiskStore.aiApprovalManualRiskLevels, [.medium, .high])
+
+        let fullAutoDefaults = makeDefaults()
+        fullAutoDefaults.set("fullAuto", forKey: "aiAutoApprovalMode")
+        let fullAutoStore = makeStore(defaults: fullAutoDefaults)
+        XCTAssertTrue(fullAutoStore.aiApprovalEnabled)
+        XCTAssertTrue(fullAutoStore.aiApprovalManualRiskLevels.isEmpty)
     }
 
     func testHookDebugLogSettingsPersistAndWriteRuntimeConfig() {

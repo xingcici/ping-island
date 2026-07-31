@@ -103,20 +103,51 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         XCTAssertNil(secondJSON["response_format"])
     }
 
-    func testExecutionPolicyMatchesConfiguredModes() {
+    func testRateLimitResponseRetriesBeforeFailingApproval() async throws {
+        let endpoint = URL(string: "https://example.com/v1/chat/completions")!
+        let limitedData = try JSONSerialization.data(withJSONObject: [
+            "error": ["message": "try again"]
+        ])
+        let successData = try JSONSerialization.data(withJSONObject: [
+            "choices": [[
+                "message": [
+                    "content": "{\"decision\":\"approve\",\"risk\":\"low\",\"reason\":\"Safe\"}"
+                ]
+            ]]
+        ])
+        let transport = StubTransport(responses: [
+            (limitedData, HTTPURLResponse(url: endpoint, statusCode: 429, httpVersion: nil, headerFields: nil)!),
+            (successData, HTTPURLResponse(url: endpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        ])
+        let client = OpenAICompatibleApprovalClient(transport: transport)
+
+        let result = try await client.decide(configuration: configuration(), context: context())
+
+        XCTAssertEqual(result.decision.decision, .approve)
+        let requests = await transport.capturedRequests()
+        XCTAssertEqual(requests.count, 2)
+    }
+
+    func testExecutionPolicyUsesManualRiskSelection() {
         let lowApprove = AIApprovalDecision(decision: .approve, risk: .low, reason: "ok")
         let highApprove = AIApprovalDecision(decision: .approve, risk: .high, reason: "risky")
         let lowDeny = AIApprovalDecision(decision: .deny, risk: .low, reason: "deny")
 
-        XCTAssertFalse(AIApprovalExecutionPolicy.shouldExecute(mode: .off, decision: lowApprove))
-        XCTAssertTrue(AIApprovalExecutionPolicy.shouldExecute(mode: .lowRisk, decision: lowApprove))
-        XCTAssertFalse(AIApprovalExecutionPolicy.shouldExecute(mode: .lowRisk, decision: highApprove))
-        XCTAssertFalse(AIApprovalExecutionPolicy.shouldExecute(mode: .lowRisk, decision: lowDeny))
-        XCTAssertTrue(AIApprovalExecutionPolicy.shouldExecute(mode: .fullAuto, decision: highApprove))
-        XCTAssertTrue(AIApprovalExecutionPolicy.shouldExecute(mode: .fullAuto, decision: lowDeny))
+        XCTAssertFalse(AIApprovalExecutionPolicy.shouldExecute(
+            isEnabled: false, manualRiskLevels: [], decision: lowApprove
+        ))
+        XCTAssertTrue(AIApprovalExecutionPolicy.shouldExecute(
+            isEnabled: true, manualRiskLevels: [.medium, .high], decision: lowApprove
+        ))
+        XCTAssertFalse(AIApprovalExecutionPolicy.shouldExecute(
+            isEnabled: true, manualRiskLevels: [.medium, .high], decision: highApprove
+        ))
+        XCTAssertTrue(AIApprovalExecutionPolicy.shouldExecute(
+            isEnabled: true, manualRiskLevels: [.medium, .high], decision: lowDeny
+        ))
     }
 
-    func testContextBuilderBoundsConversationAndRedactsSensitiveToolFields() throws {
+    func testContextBuilderPreservesCompleteConversationAndToolFields() throws {
         let intervention = SessionIntervention(
             id: "tool-1",
             kind: .approval,
@@ -171,9 +202,9 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
 
         let context = try XCTUnwrap(AIApprovalContextBuilder.makeContext(event: event, session: session))
 
-        XCTAssertEqual(context.recentConversation.count, 6)
+        XCTAssertEqual(context.recentConversation.count, 8)
         XCTAssertFalse(context.recentConversation.contains { $0.content.contains("private thought") })
-        XCTAssertEqual(context.toolInput["api_token"]?.value as? String, "<redacted>")
+        XCTAssertEqual(context.toolInput["api_token"]?.value as? String, "must-not-leak")
         XCTAssertEqual(context.toolInput["command"]?.value as? String, "make test")
     }
 
@@ -191,6 +222,13 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
 
         XCTAssertEqual(store.records.count, 1)
         XCTAssertEqual(store.records.first?.createdAt, now)
+        let exported = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: store.exportData()) as? [[String: Any]]
+        )
+        XCTAssertEqual(exported.first?["sessionID"] as? String, "session-1")
+        let exportedContext = try XCTUnwrap(exported.first?["context"] as? [String: Any])
+        let exportedToolInput = try XCTUnwrap(exportedContext["toolInput"] as? [String: Any])
+        XCTAssertEqual(exportedToolInput["api_token"] as? String, "complete-value")
 
         let excessRecords = (0...AIApprovalAuditStore.maximumRecordCount).map { offset in
             auditRecord(createdAt: now.addingTimeInterval(-TimeInterval(offset)))
@@ -207,6 +245,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
     func testAuditSummaryRedactsTokenLikeValues() {
         let context = AIApprovalRequestContext(
             sessionID: "session-1",
+            toolUseID: "tool-1",
             provider: "claude",
             client: "Claude Code",
             cwd: "/workspace/project",
@@ -247,7 +286,8 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
 
     private func configuration(apiKey: String? = nil) -> AIApprovalConfiguration {
         AIApprovalConfiguration(
-            mode: .fullAuto,
+            isEnabledByUser: true,
+            manualRiskLevels: [],
             baseURL: "https://example.com/v1",
             model: "test-model",
             policy: "Approve read-only inspection.",
@@ -258,6 +298,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
     private func context() -> AIApprovalRequestContext {
         AIApprovalRequestContext(
             sessionID: "session-1",
+            toolUseID: "tool-1",
             provider: "claude",
             client: "Claude Code",
             cwd: "/workspace/project",
@@ -274,6 +315,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
             id: UUID(),
             createdAt: createdAt,
             sessionID: "session-1",
+            toolUseID: "tool-1",
             provider: "claude",
             client: "Claude Code",
             model: "test-model",
@@ -284,7 +326,15 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
             reason: "Read-only",
             latencyMilliseconds: 10,
             outcome: .autoApproved,
-            error: nil
+            error: nil,
+            context: AIApprovalAuditContext(
+                toolUseID: "tool-1",
+                cwd: "/workspace/project",
+                interventionTitle: "Approve read",
+                interventionMessage: "Read a project file",
+                toolInput: ["api_token": AnyCodable("complete-value")],
+                conversation: [.init(role: "user", content: "Inspect the README")]
+            )
         )
     }
 }

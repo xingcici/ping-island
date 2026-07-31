@@ -401,7 +401,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
 
     private func primeExistingAttentionTracking() {
         _ = manualAttentionTracker.consumeNewAttentionSession(
-            from: sessionMonitor.instances
+            from: sessionMonitor.sessionsEligibleForManualAttention(from: sessionMonitor.instances)
         )
     }
 
@@ -645,6 +645,21 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
                 self?.reconcileHighlightedSessionState()
                 self?.reconcileBubbleStateWithAvailableContent()
                 self?.scheduleWindowSizeUpdate()
+            }
+            .store(in: &cancellables)
+
+        sessionMonitor.$aiApprovalStates
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let instances = self.sessionMonitor.instances
+                self.handleManualAttentionChange()
+                self.handleSessionSoundTransitions(instances)
+                self.presentExistingAttentionIfNeeded()
+                self.reconcileHighlightedSessionState()
+                self.reconcileBubbleStateWithAvailableContent()
+                self.scheduleWindowSizeUpdate()
             }
             .store(in: &cancellables)
 
@@ -1332,16 +1347,17 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
     }
 
     private func presentExistingAttentionIfNeeded() {
+        let instances = sessionMonitor.sessionsEligibleForAutomaticPresentation(from: sessionMonitor.instances)
         guard interactionModel.bubbleState != .pinned else { return }
         guard DetachedIslandContentModel.canPresentBubble(
-            from: sessionMonitor.instances,
+            from: instances,
             mode: .hoverPreview,
             activeCompletionNotification: activeCompletionNotification
         ) else {
             return
         }
         guard IslandExpandedRouteResolver.highestPriorityAttentionSession(
-            from: sessionMonitor.instances
+            from: instances
         ) != nil else {
             return
         }
@@ -1353,7 +1369,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
 
     private func handleManualAttentionChange() {
         guard let targetSession = manualAttentionTracker.consumeNewAttentionSession(
-            from: sessionMonitor.instances
+            from: sessionMonitor.sessionsEligibleForManualAttention(from: sessionMonitor.instances)
         ) else {
             scheduleDelayedManualAttentionPresentationIfNeeded()
             return
@@ -1377,7 +1393,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
         delayedManualAttentionWorkItem = nil
 
         guard let readyAt = manualAttentionTracker.nextDelayedAttentionDate(
-            from: sessionMonitor.instances
+            from: sessionMonitor.sessionsEligibleForManualAttention(from: sessionMonitor.instances)
         ) else {
             return
         }
@@ -1920,6 +1936,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
     }
 
     private func primeSoundTransitions(_ instances: [SessionState]) {
+        let instances = sessionMonitor.sessionsEligibleForManualAttention(from: instances)
         previousProcessingIds = Set(
             instances
                 .filter(\.phase.contributesToProcessingSoundEdge)
@@ -1949,6 +1966,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
     }
 
     private func handleSessionSoundTransitions(_ instances: [SessionState]) {
+        let instances = sessionMonitor.sessionsEligibleForManualAttention(from: instances)
         if !hasPrimedSoundTransitions {
             primeSoundTransitions(instances)
             return
