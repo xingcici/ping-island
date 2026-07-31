@@ -116,6 +116,28 @@ struct AIApprovalPresentationState: Equatable, Sendable {
     }
 }
 
+struct AIApprovalRequestKey: Hashable, Sendable {
+    let sessionID: String
+    let toolUseID: String
+}
+
+struct AIApprovalRequestStateStore: Sendable {
+    private(set) var states: [AIApprovalRequestKey: AIApprovalPresentationState] = [:]
+
+    mutating func set(_ state: AIApprovalPresentationState, sessionID: String) {
+        states[AIApprovalRequestKey(sessionID: sessionID, toolUseID: state.toolUseID)] = state
+    }
+
+    @discardableResult
+    mutating func remove(sessionID: String, toolUseID: String) -> AIApprovalPresentationState? {
+        states.removeValue(forKey: AIApprovalRequestKey(sessionID: sessionID, toolUseID: toolUseID))
+    }
+
+    func state(sessionID: String, toolUseID: String) -> AIApprovalPresentationState? {
+        states[AIApprovalRequestKey(sessionID: sessionID, toolUseID: toolUseID)]
+    }
+}
+
 enum AIApprovalPresentationPolicy {
     nonisolated static func shouldPresentManualApproval(
         needsApprovalResponse: Bool,

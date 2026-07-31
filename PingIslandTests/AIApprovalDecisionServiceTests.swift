@@ -189,6 +189,34 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         }
     }
 
+    func testRequestStateStorePreservesConcurrentToolsInOneSession() {
+        var store = AIApprovalRequestStateStore()
+        let evaluating = AIApprovalPresentationState(toolUseID: "tool-1", phase: .evaluating)
+        let recommendation = AIApprovalPresentationState(
+            toolUseID: "tool-2",
+            phase: .recommendation(decision: .deny, risk: .high, reason: "Needs review")
+        )
+        let failed = AIApprovalPresentationState(
+            toolUseID: "tool-3",
+            phase: .failed(message: "Unavailable")
+        )
+
+        store.set(evaluating, sessionID: "session-1")
+        store.set(recommendation, sessionID: "session-1")
+        store.set(failed, sessionID: "session-1")
+
+        XCTAssertEqual(store.states.count, 3)
+        XCTAssertEqual(store.state(sessionID: "session-1", toolUseID: "tool-1"), evaluating)
+        XCTAssertEqual(store.state(sessionID: "session-1", toolUseID: "tool-2"), recommendation)
+        XCTAssertEqual(store.state(sessionID: "session-1", toolUseID: "tool-3"), failed)
+
+        store.remove(sessionID: "session-1", toolUseID: "tool-1")
+
+        XCTAssertNil(store.state(sessionID: "session-1", toolUseID: "tool-1"))
+        XCTAssertEqual(store.state(sessionID: "session-1", toolUseID: "tool-2"), recommendation)
+        XCTAssertEqual(store.state(sessionID: "session-1", toolUseID: "tool-3"), failed)
+    }
+
     func testContextBuilderPreservesCompleteConversationAndToolFields() throws {
         let intervention = SessionIntervention(
             id: "tool-1",

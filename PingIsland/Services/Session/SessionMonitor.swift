@@ -33,10 +33,7 @@ class SessionMonitor: ObservableObject {
     private var questionDraftCache = SessionQuestionDraftCache()
     private var telemetryPendingAttentionSessionIDs: Set<String> = []
     private let aiApprovalService: AIApprovalDecisionService
-    private struct AIApprovalRequestKey: Hashable {
-        let sessionID: String
-        let toolUseID: String
-    }
+    private var aiApprovalRequestStates = AIApprovalRequestStateStore()
     private var aiApprovalTasks: [AIApprovalRequestKey: Task<Void, Never>] = [:]
     private var aiApprovalAuditRecordIDs: [AIApprovalRequestKey: UUID] = [:]
 
@@ -670,7 +667,7 @@ class SessionMonitor: ObservableObject {
                     )
                 } catch {
                     guard !Task.isCancelled else { return }
-                    let isCurrent = await isCurrentAIApproval(
+                    let isPending = await isPendingAIApproval(
                         sessionID: context.sessionID,
                         toolUseID: toolUseID
                     )
@@ -678,20 +675,20 @@ class SessionMonitor: ObservableObject {
                         configuration: configuration,
                         context: context,
                         evaluation: nil,
-                        outcome: isCurrent ? .failed : .superseded,
-                        error: isCurrent ? error : nil
+                        outcome: isPending ? .failed : .superseded,
+                        error: isPending ? error : nil
                     )
                     var loggedError = error.localizedDescription
                     if let apiKey = configuration.apiKey, !apiKey.isEmpty {
                         loggedError = loggedError.replacingOccurrences(of: apiKey, with: "[redacted]")
                     }
                     AIApprovalRuntimeLog.record(
-                        isCurrent ? "evaluation_failed_manual" : "evaluation_failed_superseded",
+                        isPending ? "evaluation_failed_manual" : "evaluation_failed_superseded",
                         sessionID: context.sessionID,
                         toolUseID: toolUseID,
                         details: "error=\(loggedError)"
                     )
-                    if isCurrent {
+                    if isPending {
                         setAIApprovalState(
                             AIApprovalPresentationState(
                                 toolUseID: toolUseID,
@@ -733,7 +730,7 @@ class SessionMonitor: ObservableObject {
             manualRiskLevels: AppSettings.shared.aiApprovalManualRiskLevels,
             decision: evaluation.decision
         ) else {
-            guard await isCurrentAIApproval(sessionID: context.sessionID, toolUseID: toolUseID) else {
+            guard await isPendingAIApproval(sessionID: context.sessionID, toolUseID: toolUseID) else {
                 AIApprovalRuntimeLog.record(
                     "manual_result_superseded",
                     sessionID: context.sessionID,
@@ -843,22 +840,42 @@ class SessionMonitor: ObservableObject {
         }
     }
 
-    private func isCurrentAIApproval(sessionID: String, toolUseID: String) async -> Bool {
-        guard let state = aiApprovalStates[sessionID], state.toolUseID == toolUseID else {
+    private func isPendingAIApproval(sessionID: String, toolUseID: String) async -> Bool {
+        guard aiApprovalRequestStates.state(sessionID: sessionID, toolUseID: toolUseID) != nil else {
             return false
         }
         guard let session = await SessionStore.shared.session(for: sessionID),
-              session.needsApprovalResponse,
-              Self.approvalToolUseId(for: session) == toolUseID else {
-            setAIApprovalState(nil, for: sessionID)
+              Self.hasPendingApproval(session, toolUseID: toolUseID) else {
+            setAIApprovalState(nil, for: sessionID, toolUseID: toolUseID)
             return false
         }
         return true
     }
 
+    private nonisolated static func hasPendingApproval(_ session: SessionState, toolUseID: String) -> Bool {
+        if session.activePermission?.toolUseId == toolUseID {
+            return true
+        }
+        if session.chatItems.contains(where: { item in
+            guard item.id == toolUseID,
+                  case .toolCall(let tool) = item.type else {
+                return false
+            }
+            return tool.status == .waitingForApproval
+        }) {
+            return true
+        }
+        if session.intervention?.matchesResolvedToolUseId(toolUseID) == true {
+            return true
+        }
+        return session.pendingInterventions.contains {
+            $0.kind == .approval && $0.matchesResolvedToolUseId(toolUseID)
+        }
+    }
+
     private func markAIApprovalHandledByUser(sessionId: String) {
-        guard let state = aiApprovalStates.removeValue(forKey: sessionId) else { return }
-        refreshVisibleSessions()
+        guard let state = aiApprovalStates[sessionId] else { return }
+        setAIApprovalState(nil, for: sessionId, toolUseID: state.toolUseID)
         let requestKey = AIApprovalRequestKey(sessionID: sessionId, toolUseID: state.toolUseID)
         AIApprovalRuntimeLog.record(
             "handled_by_user",
@@ -872,21 +889,59 @@ class SessionMonitor: ObservableObject {
     }
 
     private func clearPreparedAIApprovalState(for event: HookEvent) {
-        guard let state = aiApprovalStates[event.sessionId],
-              state.isEvaluating,
-              event.toolUseId == nil || state.toolUseID == event.toolUseId else {
+        let toolUseID = event.toolUseId ?? aiApprovalStates[event.sessionId]?.toolUseID
+        guard let toolUseID,
+              let state = aiApprovalRequestStates.state(sessionID: event.sessionId, toolUseID: toolUseID),
+              state.isEvaluating else {
             return
         }
-        setAIApprovalState(nil, for: event.sessionId)
+        setAIApprovalState(nil, for: event.sessionId, toolUseID: toolUseID)
     }
 
-    private func setAIApprovalState(_ state: AIApprovalPresentationState?, for sessionID: String) {
+    private func setAIApprovalState(
+        _ state: AIApprovalPresentationState?,
+        for sessionID: String,
+        toolUseID: String? = nil
+    ) {
         if let state {
-            aiApprovalStates[sessionID] = state
+            aiApprovalRequestStates.set(state, sessionID: sessionID)
+            publishVisibleAIApprovalState(for: sessionID, fallback: state)
+            return
+        }
+
+        let resolvedToolUseID = toolUseID ?? aiApprovalStates[sessionID]?.toolUseID
+        if let resolvedToolUseID {
+            aiApprovalRequestStates.remove(sessionID: sessionID, toolUseID: resolvedToolUseID)
+        }
+        publishVisibleAIApprovalState(for: sessionID)
+    }
+
+    @discardableResult
+    private func publishVisibleAIApprovalState(
+        for sessionID: String,
+        fallback: AIApprovalPresentationState? = nil,
+        refresh: Bool = true
+    ) -> Bool {
+        let currentToolUseID = allSessions
+            .first(where: { $0.sessionId == sessionID })
+            .flatMap(Self.approvalToolUseId(for:))
+        let storedState = currentToolUseID.flatMap {
+            aiApprovalRequestStates.state(sessionID: sessionID, toolUseID: $0)
+        }
+        let fallbackState = fallback.flatMap { state in
+            currentToolUseID == nil || currentToolUseID == state.toolUseID ? state : nil
+        }
+        let visibleState = storedState ?? fallbackState
+        guard aiApprovalStates[sessionID] != visibleState else { return false }
+        if let visibleState {
+            aiApprovalStates[sessionID] = visibleState
         } else {
             aiApprovalStates.removeValue(forKey: sessionID)
         }
-        refreshVisibleSessions()
+        if refresh {
+            refreshVisibleSessions()
+        }
+        return true
     }
 
     private func clearApprovalNotification(
@@ -1166,26 +1221,38 @@ class SessionMonitor: ObservableObject {
     // MARK: - State Update
 
     private func updateFromSessions(_ sessions: [SessionState]) {
-        pruneResolvedAIApprovalStates(using: sessions)
-        guard sessions != allSessions else { return }
+        let sessionsChanged = sessions != allSessions
         allSessions = sessions
+        pruneResolvedAIApprovalStates(using: sessions)
+        let approvalStatesChanged = reconcileVisibleAIApprovalStates(using: sessions)
+        guard sessionsChanged || approvalStatesChanged else { return }
         refreshVisibleSessions()
     }
 
     private func pruneResolvedAIApprovalStates(using sessions: [SessionState]) {
         let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.sessionId, $0) })
-        let staleStates = aiApprovalStates.filter { sessionID, state in
-            let session = sessionsByID[sessionID]
-            return session?.needsApprovalResponse != true
-                || session.flatMap(Self.approvalToolUseId(for:)) != state.toolUseID
+        let staleStates = aiApprovalRequestStates.states.filter { requestKey, _ in
+            guard let session = sessionsByID[requestKey.sessionID] else { return true }
+            return !Self.hasPendingApproval(session, toolUseID: requestKey.toolUseID)
         }
-        for (sessionID, state) in staleStates {
-            aiApprovalStates[sessionID] = nil
-            let requestKey = AIApprovalRequestKey(sessionID: sessionID, toolUseID: state.toolUseID)
+        for (requestKey, _) in staleStates {
+            aiApprovalRequestStates.remove(
+                sessionID: requestKey.sessionID,
+                toolUseID: requestKey.toolUseID
+            )
             if let recordID = aiApprovalAuditRecordIDs.removeValue(forKey: requestKey) {
                 aiApprovalService.updateAuditOutcome(id: recordID, outcome: .superseded)
             }
         }
+    }
+
+    private func reconcileVisibleAIApprovalStates(using sessions: [SessionState]) -> Bool {
+        let sessionIDs = Set(aiApprovalStates.keys).union(sessions.map(\.sessionId))
+        var changed = false
+        for sessionID in sessionIDs {
+            changed = publishVisibleAIApprovalState(for: sessionID, refresh: false) || changed
+        }
+        return changed
     }
 
     private func refreshVisibleSessions() {
