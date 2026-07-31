@@ -115,6 +115,7 @@ struct SessionListView: View {
                 VStack(spacing: 0) {
                     InstanceRow(
                         session: group.session,
+                        aiApprovalState: sessionMonitor.aiApprovalState(for: group.session.sessionId),
                         isExpanded: expandedSessionStableID == group.session.stableId,
                         isSelected: selectedSessionStableID == group.session.stableId,
                         isHighlighted: highlightedSessionStableID == group.session.stableId,
@@ -657,6 +658,7 @@ private struct SubagentAttachmentRow: View {
 
 struct InstanceRow: View {
     let session: SessionState
+    let aiApprovalState: AIApprovalPresentationState?
     let isExpanded: Bool
     let isSelected: Bool
     let isHighlighted: Bool
@@ -1408,6 +1410,7 @@ struct InstanceRow: View {
         } else if isWaitingForApproval {
             InlineApprovalButtons(
                 sessionAction: session.scopedApprovalAction,
+                aiApprovalState: aiApprovalState,
                 onChat: onChat,
                 onApprove: onApprove,
                 onApproveForSession: onApproveForSession,
@@ -1574,6 +1577,7 @@ private struct QueuePreviewLine: Identifiable {
 /// Compact inline approval buttons with staggered animation
 struct InlineApprovalButtons: View {
     let sessionAction: SessionScopedApprovalAction?
+    let aiApprovalState: AIApprovalPresentationState?
     let onChat: () -> Void
     let onApprove: () -> Void
     let onApproveForSession: () -> Void
@@ -1586,6 +1590,11 @@ struct InlineApprovalButtons: View {
 
     var body: some View {
         HStack(spacing: 5) {
+            if let aiApprovalState {
+                AIApprovalStatusView(state: aiApprovalState, compact: true)
+                    .help(aiApprovalHelpText(aiApprovalState))
+            }
+
             // Chat button
             IconButton(icon: "bubble.left") {
                 onChat()
@@ -1653,6 +1662,22 @@ struct InlineApprovalButtons: View {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.15)) {
                 showAllowButton = true
             }
+        }
+    }
+
+    private func aiApprovalHelpText(_ state: AIApprovalPresentationState) -> String {
+        switch state.phase {
+        case .evaluating:
+            return AppLocalization.string("智能审批判断中，可随时手动处理")
+        case .recommendation(let decision, let risk, let reason):
+            return AppLocalization.format(
+                "模型%@ · %@：%@",
+                AppLocalization.string(decision == .approve ? "建议允许" : "建议拒绝"),
+                AppLocalization.string(risk.title),
+                reason
+            )
+        case .failed(let message):
+            return AppLocalization.format("智能审批失败：%@", AppLocalization.string(message))
         }
     }
 }

@@ -448,7 +448,7 @@ private struct HoverConversationCard: View {
 
 private struct HoverApprovalCard: View {
     let session: SessionState
-    let sessionMonitor: SessionMonitor
+    @ObservedObject var sessionMonitor: SessionMonitor
     var suppressControls = false
     let onActionCompleted: () -> Void
 
@@ -495,6 +495,10 @@ private struct HoverApprovalCard: View {
             if suppressControls {
                 HoverTerminalRoutedPromptNotice(session: session)
             } else {
+                if let state = sessionMonitor.aiApprovalState(for: session.sessionId) {
+                    AIApprovalStatusView(state: state)
+                }
+
                 HStack(spacing: 8) {
                     Button(AppLocalization.string("Deny")) {
                         sessionMonitor.denyPermission(sessionId: session.sessionId, reason: nil)

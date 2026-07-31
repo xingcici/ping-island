@@ -12,6 +12,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     case mascot
     case sound
     case integration
+    case aiApproval
     case remote
     case labs
     case shortcuts
@@ -28,6 +29,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .sound: return "声音"
         case .analytics: return "统计"
         case .integration: return "集成"
+        case .aiApproval: return "智能审批"
         case .remote: return "远程"
         case .labs: return "实验室"
         case .about: return "关于"
@@ -43,6 +45,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .sound: return "通知与提示音"
         case .analytics: return "Agent、Token 与工具"
         case .integration: return "Hooks 与 IDE 扩展"
+        case .aiApproval: return "模型判断与自动回调"
         case .remote: return "SSH 主机与远程转发"
         case .labs: return "试验性特性"
         case .about: return "版本与更新"
@@ -58,6 +61,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .sound: return "speaker.wave.2.fill"
         case .analytics: return "chart.bar.xaxis"
         case .integration: return "link.circle.fill"
+        case .aiApproval: return "brain.head.profile.fill"
         case .remote: return "network.badge.shield.half.filled"
         case .labs: return "flask.fill"
         case .about: return "info.circle.fill"
@@ -73,6 +77,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .sound: return Color(red: 0.22, green: 0.83, blue: 0.42)
         case .analytics: return Color(red: 0.97, green: 0.70, blue: 0.22)
         case .integration: return Color(red: 0.16, green: 0.76, blue: 0.72)
+        case .aiApproval: return Color(red: 0.38, green: 0.72, blue: 0.98)
         case .remote: return Color(red: 0.95, green: 0.54, blue: 0.20)
         case .labs: return Color(red: 0.82, green: 0.48, blue: 0.97)
         case .about: return Color(red: 0.17, green: 0.60, blue: 0.96)
@@ -271,7 +276,7 @@ final class SettingsPanelViewModel: ObservableObject {
             refreshCustomHookInstallations()
             refreshQoderCLIHookRefreshStatus()
             refreshBridgeHealthStatus()
-        case .general, .shortcuts, .mascot, .analytics, .remote, .labs, .about:
+        case .general, .shortcuts, .mascot, .analytics, .aiApproval, .remote, .labs, .about:
             break
         }
     }
@@ -2186,7 +2191,7 @@ private struct SettingsCategoryLoadingView: View {
             return AppLocalization.string("正在扫描可用声音主题包")
         case .integration:
             return AppLocalization.string("正在检查 Hooks、IDE 扩展与客户端安装状态")
-        case .general, .shortcuts, .mascot, .analytics, .remote, .labs, .about:
+        case .general, .shortcuts, .mascot, .analytics, .aiApproval, .remote, .labs, .about:
             return AppLocalization.string("马上就好")
         }
     }
@@ -2257,6 +2262,7 @@ private struct SettingsPanelContentView: View {
     @ObservedObject private var screenSelector = ScreenSelector.shared
     @ObservedObject private var updateManager = UpdateManager.shared
     @ObservedObject private var remoteManager = RemoteConnectorManager.shared
+    @ObservedObject private var aiApprovalAudit = AIApprovalAuditStore.shared
     @State private var selectedCategory: SettingsCategory? = .general
     @State private var pendingHookReinstallProfile: ManagedHookClientProfile?
     @State private var pendingHookOptionsRequest: HookInstallOptionsRequest?
@@ -2270,6 +2276,11 @@ private struct SettingsPanelContentView: View {
     @State private var arePreviewAnimationsActive = false
     @State private var loadingCategory: SettingsCategory?
     @State private var categoryRefreshTask: Task<Void, Never>?
+    @State private var aiApprovalAPIKey = ""
+    @State private var hasStoredAIApprovalAPIKey = false
+    @State private var aiApprovalConnectionStatus: String?
+    @State private var aiApprovalConnectionSucceeded = false
+    @State private var isTestingAIApprovalConnection = false
 
     var body: some View {
         ZStack {
@@ -2307,6 +2318,7 @@ private struct SettingsPanelContentView: View {
 
             scheduleCategoryRefresh(for: currentCategory, showLoading: false)
             showAnalyticsConsentPromptIfNeeded()
+            hasStoredAIApprovalAPIKey = AIApprovalCredentialStore().apiKey() != nil
         }
         .onDisappear {
             isAccessibilityPollingActive = false
@@ -2675,6 +2687,8 @@ private struct SettingsPanelContentView: View {
                         analyticsContent
                     case .integration:
                         integrationContent
+                    case .aiApproval:
+                        aiApprovalContent
                     case .remote:
                         remoteContent
                     case .labs:
@@ -2793,7 +2807,7 @@ private struct SettingsPanelContentView: View {
         switch category {
         case .display, .sound, .integration:
             return true
-        case .general, .shortcuts, .mascot, .analytics, .remote, .labs, .about:
+        case .general, .shortcuts, .mascot, .analytics, .aiApproval, .remote, .labs, .about:
             return false
         }
     }
@@ -3419,6 +3433,284 @@ private struct SettingsPanelContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             SettingsSectionCard(title: "实验室") {
                 LabsEmptyStateView()
+            }
+        }
+    }
+
+    private var aiApprovalContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            SettingsSectionCard(title: "自动处理策略") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(appLocalized: "审批模式")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+
+                    Picker("", selection: $settings.aiAutoApprovalMode) {
+                        ForEach(AIAutoApprovalMode.allCases) { mode in
+                            Text(appLocalized: mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+
+                    Text(appLocalized: settings.aiAutoApprovalMode.subtitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.55))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if settings.aiAutoApprovalMode != .off,
+                       settings.aiApprovalModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Label("填写模型名称后才会开始智能审批", systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(TerminalColors.amber)
+                    }
+                }
+                .padding(16)
+            }
+
+            SettingsSectionCard(title: "OpenAI 兼容接口") {
+                aiApprovalTextField(
+                    title: "Base URL",
+                    subtitle: "HTTPS 可连接任意地址；HTTP 仅允许本机。将自动补全 /chat/completions。",
+                    text: $settings.aiApprovalBaseURL,
+                    placeholder: "https://api.openai.com/v1"
+                )
+                SettingsLineDivider()
+                aiApprovalTextField(
+                    title: "模型",
+                    subtitle: "填写兼容服务提供的模型 ID。",
+                    text: $settings.aiApprovalModel,
+                    placeholder: "model-id"
+                )
+                SettingsLineDivider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(appLocalized: "API Key")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.9))
+                            Text(appLocalized: hasStoredAIApprovalAPIKey
+                                ? "已安全保存在 macOS Keychain；留空不会覆盖。"
+                                : "本机免鉴权服务可以留空。")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                        Spacer(minLength: 18)
+                        SecureField("API Key", text: $aiApprovalAPIKey)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .frame(width: 245)
+                            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    }
+
+                    HStack(spacing: 10) {
+                        Button("保存 Key") {
+                            let store = AIApprovalCredentialStore()
+                            if store.saveAPIKey(aiApprovalAPIKey) {
+                                aiApprovalAPIKey = ""
+                                hasStoredAIApprovalAPIKey = store.apiKey() != nil
+                                aiApprovalConnectionStatus = AppLocalization.string("API Key 已保存")
+                                aiApprovalConnectionSucceeded = true
+                            } else {
+                                aiApprovalConnectionStatus = AppLocalization.string("API Key 保存失败")
+                                aiApprovalConnectionSucceeded = false
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(aiApprovalAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        if hasStoredAIApprovalAPIKey {
+                            Button("清除 Key", role: .destructive) {
+                                AIApprovalCredentialStore().deleteAPIKey()
+                                hasStoredAIApprovalAPIKey = false
+                                aiApprovalConnectionStatus = AppLocalization.string("API Key 已清除")
+                                aiApprovalConnectionSucceeded = true
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+
+                        Button {
+                            testAIApprovalConnection()
+                        } label: {
+                            if isTestingAIApprovalConnection {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text(appLocalized: "测试连接")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isTestingAIApprovalConnection)
+
+                        if let status = aiApprovalConnectionStatus {
+                            Text(status)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(aiApprovalConnectionSucceeded ? TerminalColors.green : TerminalColors.amber)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+
+            SettingsSectionCard(title: "判断规则") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(appLocalized: "这段规则会追加到固定安全提示词中。模型只能返回允许一次或拒绝，不能授予会话级权限。")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.55))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    TextEditor(text: $settings.aiApprovalPolicy)
+                        .font(.system(size: 12, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(minHeight: 105)
+                        .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
+                        )
+
+                    Button("恢复默认规则") {
+                        settings.aiApprovalPolicy = AppSettingsStore.defaultAIApprovalPolicy
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(16)
+            }
+
+            SettingsSectionCard(title: "数据与审计") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("每次判断会发送脱敏后的 Hook 内容，以及最近 6 条用户/助手文本。", systemImage: "lock.shield")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.62))
+                    Text(appLocalized: "审计仅保存在本机 30 天，不保存完整对话、完整工具参数或 API Key。模型服务的数据保留策略由你配置的服务决定。")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if aiApprovalAudit.records.isEmpty {
+                        Text(appLocalized: "暂无智能审批记录")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.4))
+                            .padding(.vertical, 8)
+                    } else {
+                        ForEach(aiApprovalAudit.records.prefix(30)) { record in
+                            SettingsLineDivider()
+                            aiApprovalAuditRow(record)
+                        }
+
+                        Button("清空审计记录", role: .destructive) {
+                            aiApprovalAudit.clear()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .padding(.top, 4)
+                    }
+                }
+                .padding(16)
+            }
+        }
+    }
+
+    private func aiApprovalTextField(
+        title: String,
+        subtitle: String,
+        text: Binding<String>,
+        placeholder: String
+    ) -> some View {
+        HStack(spacing: 18) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(appLocalized: title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+                Text(appLocalized: subtitle)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 10)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, design: .monospaced))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(width: 300)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(16)
+    }
+
+    private func aiApprovalAuditRow(_ record: AIApprovalAuditRecord) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: record.outcome == .autoApproved ? "checkmark.circle.fill" :
+                (record.outcome == .autoDenied ? "xmark.circle.fill" : "person.crop.circle.badge.clock"))
+                .foregroundColor(record.outcome == .autoApproved ? TerminalColors.green : TerminalColors.amber)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(record.toolName)
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    Text(appLocalized: record.outcome.title)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.55))
+                    if let risk = record.risk {
+                        Text(appLocalized: risk.title)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.45))
+                    }
+                }
+                if !record.toolSummary.isEmpty {
+                    Text(record.toolSummary)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
+                        .lineLimit(2)
+                }
+                if let reason = record.reason ?? record.error {
+                    Text(reason)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.55))
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
+            Text(record.createdAt, style: .relative)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.white.opacity(0.35))
+        }
+        .padding(.vertical, 7)
+    }
+
+    private func testAIApprovalConnection() {
+        isTestingAIApprovalConnection = true
+        aiApprovalConnectionStatus = nil
+        let storedKey = AIApprovalCredentialStore().apiKey()
+        let enteredKey = aiApprovalAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = enteredKey.isEmpty ? storedKey : enteredKey
+        let configuration = AIApprovalConfiguration(
+            mode: settings.aiAutoApprovalMode,
+            baseURL: settings.aiApprovalBaseURL,
+            model: settings.aiApprovalModel,
+            policy: settings.aiApprovalPolicy,
+            apiKey: key
+        )
+
+        Task { @MainActor in
+            defer { isTestingAIApprovalConnection = false }
+            do {
+                let result = try await AIApprovalDecisionService.shared.testConnection(configuration: configuration)
+                aiApprovalConnectionStatus = AppLocalization.format(
+                    "连接成功 · %@ ms",
+                    String(result.latencyMilliseconds)
+                )
+                aiApprovalConnectionSucceeded = true
+            } catch {
+                aiApprovalConnectionStatus = AppLocalization.string(error.localizedDescription)
+                aiApprovalConnectionSucceeded = false
             }
         }
     }

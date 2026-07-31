@@ -16,6 +16,7 @@ class SessionMonitor: ObservableObject {
     @Published var pendingInstances: [SessionState] = []
     @Published private(set) var claudeUsageSnapshot: ClaudeUsageSnapshot?
     @Published private(set) var codexUsageSnapshot: CodexUsageSnapshot?
+    @Published private(set) var aiApprovalStates: [String: AIApprovalPresentationState] = [:]
 
     nonisolated static var isRunningUnderXCTest: Bool {
         Foundation.ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -31,12 +32,21 @@ class SessionMonitor: ObservableObject {
     private let shouldRefreshUsage: Bool
     private var questionDraftCache = SessionQuestionDraftCache()
     private var telemetryPendingAttentionSessionIDs: Set<String> = []
+    private let aiApprovalService: AIApprovalDecisionService
+    private struct AIApprovalRequestKey: Hashable {
+        let sessionID: String
+        let toolUseID: String
+    }
+    private var aiApprovalTasks: [AIApprovalRequestKey: Task<Void, Never>] = [:]
+    private var aiApprovalAuditRecordIDs: [AIApprovalRequestKey: UUID] = [:]
 
     init(
         runtimeCoordinator: any RuntimeCoordinating = RuntimeCoordinator.shared,
+        aiApprovalService: AIApprovalDecisionService? = nil,
         observeSharedState: Bool = true
     ) {
         self.runtimeCoordinator = runtimeCoordinator
+        self.aiApprovalService = aiApprovalService ?? .shared
         self.shouldRefreshUsage = !Self.isRunningUnderXCTest
         guard observeSharedState else { return }
         if shouldRefreshUsage {
@@ -70,6 +80,9 @@ class SessionMonitor: ObservableObject {
     deinit {
         maintenanceTask?.cancel()
         usageRefreshTask?.cancel()
+        for task in aiApprovalTasks.values {
+            task.cancel()
+        }
     }
 
     // MARK: - Monitoring Lifecycle
@@ -202,6 +215,8 @@ class SessionMonitor: ObservableObject {
                 )
             )
         }
+
+        startAIApprovalIfEligible(for: effectiveEvent)
 
         if effectiveEvent.event == "PostToolUse",
            let toolUseId = effectiveEvent.toolUseId,
@@ -375,6 +390,7 @@ class SessionMonitor: ObservableObject {
     // MARK: - Permission Handling
 
     func approvePermission(sessionId: String, forSession: Bool = false) {
+        markAIApprovalHandledByUser(sessionId: sessionId)
         Task {
             guard let session = await SessionStore.shared.session(for: sessionId) else {
                 return
@@ -450,6 +466,7 @@ class SessionMonitor: ObservableObject {
     }
 
     func denyPermission(sessionId: String, reason: String?) {
+        markAIApprovalHandledByUser(sessionId: sessionId)
         Task {
             guard let session = await SessionStore.shared.session(for: sessionId) else {
                 return
@@ -506,7 +523,7 @@ class SessionMonitor: ObservableObject {
         case deny(reason: String?)
     }
 
-    private nonisolated static func approvalToolUseId(for session: SessionState) -> String? {
+    nonisolated static func approvalToolUseId(for session: SessionState) -> String? {
         if let toolUseId = session.activePermission?.toolUseId,
            !toolUseId.isEmpty {
             return toolUseId
@@ -527,6 +544,167 @@ class SessionMonitor: ObservableObject {
             let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }.first
+    }
+
+    func aiApprovalState(for sessionId: String) -> AIApprovalPresentationState? {
+        aiApprovalStates[sessionId]
+    }
+
+    private func startAIApprovalIfEligible(for event: HookEvent) {
+        let configuration = aiApprovalService.configuration(from: AppSettings.shared)
+        guard configuration.isEnabled,
+              event.ingress == .hookBridge || event.ingress == .remoteBridge,
+              event.expectsResponse,
+              !event.suppressInAppPrompt,
+              !event.codexBypassPermissions else {
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let session = await SessionStore.shared.session(for: event.sessionId),
+                  session.intervention?.kind == .approval,
+                  session.needsApprovalResponse,
+                  let toolUseID = Self.approvalToolUseId(for: session),
+                  !toolUseID.isEmpty,
+                  let context = AIApprovalContextBuilder.makeContext(event: event, session: session) else {
+                return
+            }
+            let requestKey = AIApprovalRequestKey(sessionID: session.sessionId, toolUseID: toolUseID)
+            guard aiApprovalTasks[requestKey] == nil else { return }
+
+            aiApprovalStates[session.sessionId] = AIApprovalPresentationState(
+                toolUseID: toolUseID,
+                phase: .evaluating
+            )
+
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { aiApprovalTasks[requestKey] = nil }
+
+                do {
+                    let evaluation = try await aiApprovalService.evaluate(
+                        configuration: configuration,
+                        context: context
+                    )
+                    guard !Task.isCancelled else { return }
+                    await applyAIApprovalEvaluation(
+                        evaluation,
+                        configuration: configuration,
+                        context: context,
+                        toolUseID: toolUseID
+                    )
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    let isCurrent = await isCurrentAIApproval(
+                        sessionID: context.sessionID,
+                        toolUseID: toolUseID
+                    )
+                    _ = aiApprovalService.record(
+                        configuration: configuration,
+                        context: context,
+                        evaluation: nil,
+                        outcome: isCurrent ? .failed : .superseded,
+                        error: isCurrent ? error : nil
+                    )
+                    if isCurrent {
+                        aiApprovalStates[context.sessionID] = AIApprovalPresentationState(
+                            toolUseID: toolUseID,
+                            phase: .failed(message: error.localizedDescription)
+                        )
+                    }
+                }
+            }
+            aiApprovalTasks[requestKey] = task
+        }
+    }
+
+    private func applyAIApprovalEvaluation(
+        _ evaluation: AIApprovalEvaluation,
+        configuration: AIApprovalConfiguration,
+        context: AIApprovalRequestContext,
+        toolUseID: String
+    ) async {
+        guard await isCurrentAIApproval(sessionID: context.sessionID, toolUseID: toolUseID) else {
+            _ = aiApprovalService.record(
+                configuration: configuration,
+                context: context,
+                evaluation: evaluation,
+                outcome: .superseded
+            )
+            return
+        }
+
+        let activeMode = AppSettings.shared.aiAutoApprovalMode
+        guard activeMode != .off else {
+            aiApprovalStates[context.sessionID] = nil
+            _ = aiApprovalService.record(
+                configuration: configuration,
+                context: context,
+                evaluation: evaluation,
+                outcome: .manualReview
+            )
+            return
+        }
+
+        guard AIApprovalExecutionPolicy.shouldExecute(
+            mode: activeMode,
+            decision: evaluation.decision
+        ) else {
+            let recordID = aiApprovalService.record(
+                configuration: configuration,
+                context: context,
+                evaluation: evaluation,
+                outcome: .manualReview
+            )
+            let requestKey = AIApprovalRequestKey(sessionID: context.sessionID, toolUseID: toolUseID)
+            aiApprovalAuditRecordIDs[requestKey] = recordID
+            aiApprovalStates[context.sessionID] = AIApprovalPresentationState(
+                toolUseID: toolUseID,
+                phase: .recommendation(
+                    decision: evaluation.decision.decision,
+                    risk: evaluation.decision.risk,
+                    reason: evaluation.decision.reason
+                )
+            )
+            return
+        }
+
+        aiApprovalStates[context.sessionID] = nil
+        _ = aiApprovalService.record(
+            configuration: configuration,
+            context: context,
+            evaluation: evaluation,
+            outcome: evaluation.decision.decision == .approve ? .autoApproved : .autoDenied
+        )
+
+        switch evaluation.decision.decision {
+        case .approve:
+            approvePermission(sessionId: context.sessionID)
+        case .deny:
+            denyPermission(sessionId: context.sessionID, reason: evaluation.decision.reason)
+        }
+    }
+
+    private func isCurrentAIApproval(sessionID: String, toolUseID: String) async -> Bool {
+        guard let state = aiApprovalStates[sessionID], state.toolUseID == toolUseID else {
+            return false
+        }
+        guard let session = await SessionStore.shared.session(for: sessionID),
+              session.needsApprovalResponse,
+              Self.approvalToolUseId(for: session) == toolUseID else {
+            aiApprovalStates[sessionID] = nil
+            return false
+        }
+        return true
+    }
+
+    private func markAIApprovalHandledByUser(sessionId: String) {
+        guard let state = aiApprovalStates.removeValue(forKey: sessionId) else { return }
+        let requestKey = AIApprovalRequestKey(sessionID: sessionId, toolUseID: state.toolUseID)
+        if let recordID = aiApprovalAuditRecordIDs.removeValue(forKey: requestKey) {
+            aiApprovalService.updateAuditOutcome(id: recordID, outcome: .superseded)
+        }
     }
 
     private func clearApprovalNotification(
@@ -806,9 +984,26 @@ class SessionMonitor: ObservableObject {
     // MARK: - State Update
 
     private func updateFromSessions(_ sessions: [SessionState]) {
+        pruneResolvedAIApprovalStates(using: sessions)
         guard sessions != allSessions else { return }
         allSessions = sessions
         refreshVisibleSessions()
+    }
+
+    private func pruneResolvedAIApprovalStates(using sessions: [SessionState]) {
+        let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.sessionId, $0) })
+        let staleStates = aiApprovalStates.filter { sessionID, state in
+            let session = sessionsByID[sessionID]
+            return session?.needsApprovalResponse != true
+                || session.flatMap(Self.approvalToolUseId(for:)) != state.toolUseID
+        }
+        for (sessionID, state) in staleStates {
+            aiApprovalStates[sessionID] = nil
+            let requestKey = AIApprovalRequestKey(sessionID: sessionID, toolUseID: state.toolUseID)
+            if let recordID = aiApprovalAuditRecordIDs.removeValue(forKey: requestKey) {
+                aiApprovalService.updateAuditOutcome(id: recordID, outcome: .superseded)
+            }
+        }
     }
 
     private func refreshVisibleSessions() {

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct CodexSessionView: View {
     let session: SessionState
-    let sessionMonitor: SessionMonitor
+    @ObservedObject var sessionMonitor: SessionMonitor
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject private var settings = AppSettings.shared
     @State private var isHeaderHovered = false
@@ -162,6 +162,9 @@ struct CodexSessionView: View {
             if shouldSuppressPromptControls {
                 terminalRoutedPromptNotice
             } else if intervention.kind == .approval {
+                if let state = sessionMonitor.aiApprovalState(for: session.sessionId) {
+                    AIApprovalStatusView(state: state)
+                }
                 approvalButtons(intervention)
             } else {
                 questionForm(intervention)

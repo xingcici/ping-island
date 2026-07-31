@@ -390,6 +390,10 @@ final class AppSettingsStore: ObservableObject {
     nonisolated static let defaultNotchModuleWidth: Double = 266
     nonisolated static let minimumNotchModuleWidth: Double = 64
     nonisolated static let maximumNotchModuleWidth: Double = 420
+    nonisolated static let defaultAIApprovalPolicy = """
+    只批准与用户当前目标明确相关、范围可控且影响可恢复的操作。
+    对生产环境、凭据、权限提升、外部发布、删除或覆盖重要数据保持谨慎。
+    """
 
     private let defaults: UserDefaults
     private let bridgeRuntimeConfigWriter: (BridgeRuntimeConfigSnapshot) -> Void
@@ -454,6 +458,10 @@ final class AppSettingsStore: ObservableObject {
         static let openActiveSessionShortcutDisabled = "openActiveSessionShortcutDisabled"
         static let openSessionListShortcut = "openSessionListShortcut"
         static let openSessionListShortcutDisabled = "openSessionListShortcutDisabled"
+        static let aiAutoApprovalMode = "aiAutoApprovalMode"
+        static let aiApprovalBaseURL = "aiApprovalBaseURL"
+        static let aiApprovalModel = "aiApprovalModel"
+        static let aiApprovalPolicy = "aiApprovalPolicy"
         static let routePromptsToTerminal = "routePromptsToTerminal"
         static let autoRoutePromptsToTerminalWhenIdleEnabled = "autoRoutePromptsToTerminalWhenIdleEnabled"
         static let autoRoutePromptsIdleDelay = "autoRoutePromptsIdleDelay"
@@ -940,6 +948,35 @@ final class AppSettingsStore: ObservableObject {
                 key: Keys.openSessionListShortcut,
                 disabledKey: Keys.openSessionListShortcutDisabled
             )
+        }
+    }
+
+    @Published var aiAutoApprovalMode: AIAutoApprovalMode {
+        didSet {
+            guard !isBootstrapping else { return }
+            defaults.set(aiAutoApprovalMode.rawValue, forKey: Keys.aiAutoApprovalMode)
+            recordTelemetrySettingChange(key: Keys.aiAutoApprovalMode, value: aiAutoApprovalMode.rawValue)
+        }
+    }
+
+    @Published var aiApprovalBaseURL: String {
+        didSet {
+            guard !isBootstrapping else { return }
+            defaults.set(aiApprovalBaseURL, forKey: Keys.aiApprovalBaseURL)
+        }
+    }
+
+    @Published var aiApprovalModel: String {
+        didSet {
+            guard !isBootstrapping else { return }
+            defaults.set(aiApprovalModel, forKey: Keys.aiApprovalModel)
+        }
+    }
+
+    @Published var aiApprovalPolicy: String {
+        didSet {
+            guard !isBootstrapping else { return }
+            defaults.set(aiApprovalPolicy, forKey: Keys.aiApprovalPolicy)
         }
     }
 
@@ -1555,6 +1592,14 @@ final class AppSettingsStore: ObservableObject {
         _mascotOverrides = Published(initialValue: Self.sanitizedMascotOverrides(mascotOverrideRaw))
         _openActiveSessionShortcut = Published(initialValue: openActiveSessionShortcut)
         _openSessionListShortcut = Published(initialValue: openSessionListShortcut)
+        _aiAutoApprovalMode = Published(initialValue: AIAutoApprovalMode(
+            rawValue: defaults.string(forKey: Keys.aiAutoApprovalMode) ?? ""
+        ) ?? .off)
+        _aiApprovalBaseURL = Published(initialValue: defaults.string(forKey: Keys.aiApprovalBaseURL)
+            ?? "https://api.openai.com/v1")
+        _aiApprovalModel = Published(initialValue: defaults.string(forKey: Keys.aiApprovalModel) ?? "")
+        _aiApprovalPolicy = Published(initialValue: defaults.string(forKey: Keys.aiApprovalPolicy)
+            ?? Self.defaultAIApprovalPolicy)
         let routePromptsToTerminal = Self.boolValue(
             from: defaults,
             key: Keys.routePromptsToTerminal,

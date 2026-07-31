@@ -35,4 +35,10 @@ final class SettingsCategoryLabsTests: XCTestCase {
         XCTAssertEqual(SettingsCategory.labs.subtitle, "试验性特性")
         XCTAssertEqual(SettingsCategory.labs.icon, "flask.fill")
     }
+
+    func testAIApprovalCategoryIsAlwaysVisibleAndLabeled() {
+        XCTAssertTrue(SettingsCategory.visibleCategories(labsUnlocked: false).contains(.aiApproval))
+        XCTAssertEqual(SettingsCategory.aiApproval.title, "智能审批")
+        XCTAssertEqual(SettingsCategory.aiApproval.subtitle, "模型判断与自动回调")
+    }
 }

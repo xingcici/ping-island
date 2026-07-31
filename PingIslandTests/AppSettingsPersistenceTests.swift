@@ -213,6 +213,27 @@ final class AppSettingsPersistenceTests: XCTestCase {
         XCTAssertEqual(defaults.object(forKey: "analyticsConsentPromptCompleted") as? Bool, true)
     }
 
+    func testAIApprovalDefaultsOffAndPersistsConfiguration() {
+        let defaults = makeDefaults()
+        let store = makeStore(defaults: defaults)
+
+        XCTAssertEqual(store.aiAutoApprovalMode, .off)
+        XCTAssertEqual(store.aiApprovalBaseURL, "https://api.openai.com/v1")
+        XCTAssertTrue(store.aiApprovalModel.isEmpty)
+        XCTAssertEqual(store.aiApprovalPolicy, AppSettingsStore.defaultAIApprovalPolicy)
+
+        store.aiAutoApprovalMode = .lowRisk
+        store.aiApprovalBaseURL = "http://localhost:11434/v1"
+        store.aiApprovalModel = "local-model"
+        store.aiApprovalPolicy = "Only approve repository reads."
+
+        let reloaded = makeStore(defaults: defaults)
+        XCTAssertEqual(reloaded.aiAutoApprovalMode, .lowRisk)
+        XCTAssertEqual(reloaded.aiApprovalBaseURL, "http://localhost:11434/v1")
+        XCTAssertEqual(reloaded.aiApprovalModel, "local-model")
+        XCTAssertEqual(reloaded.aiApprovalPolicy, "Only approve repository reads.")
+    }
+
     func testHookDebugLogSettingsPersistAndWriteRuntimeConfig() {
         let defaults = makeDefaults()
         var snapshots: [BridgeRuntimeConfigSnapshot] = []

@@ -138,6 +138,7 @@ Ping Island focuses on the moments that actually interrupt coding flow, then kee
 - **Attention-first UI** - Stay compact until a session needs approval, input, review, or intervention.
 - **Act from the notch** - Approve tools, deny requests, and answer follow-up prompts without hunting through tabs.
 - **Claude Code auto-approve** - Turn on per-session auto-approval when you want Claude Code to stop pausing on every permission request.
+- **AI approval policies** - Connect an OpenAI-compatible model to review responsive Hook approvals, auto-handle low-risk or all decisions, and keep a redacted 30-day local audit trail.
 - **One-click return** - Jump back to the right iTerm2, Ghostty, Terminal.app, tmux pane, or IDE window.
 - **SSH terminal support** - Bootstrap a remote PingIslandBridge over SSH, rewrite remote hooks to point back at your Mac, forward remote Codex app-server activity, and keep remote terminal activity visible in the same local Island UI.
 - **Multi-agent coverage** - Track Claude Code, Codex, Gemini CLI, Antigravity CLI, Hermes Agent, Pi Agent, Qwen Code, Kimi CLI, OpenClaw, OpenCode, Cursor, Qoder, Qoder CN, CodeBuddy, WorkBuddy, GitHub Copilot, and other compatible sessions in one place.
@@ -199,12 +200,7 @@ If `PingIslandUITests-Runner` stays suspended on macOS, run the UI tests from Xc
 
 ## Settings
 
-Ping Island currently ships a 4-category settings panel:
-
-- **General** - launch at login and baseline app behavior
-- **Display** - notch display target and placement behavior
-- **Mascot** - client mascot previews, per-client overrides, animation states
-- **Sound** - event-specific sounds, sound pack mode, sound pack import
+The **AI Approvals** category configures the OpenAI-compatible endpoint, model, Keychain-backed API key, decision rules, automation mode, connection test, and local audit history. The feature is off by default; see [AI approval configuration](docs/ai-approval.md) for behavior and privacy boundaries.
 
 ## Custom Sounds
 

@@ -141,6 +141,7 @@ Ping Island 关注的，是那些真正会打断编码节奏的时刻，并把�
 
 - **先感知，再展开** - 平时保持紧凑，只有在会话需要审批、输入、查看结果或人工介入时才展开。
 - **原地处理** - 直接在刘海界面里批准工具调用、拒绝请求、回答追问。
+- **智能审批策略** - 可接入 OpenAI 兼容模型判断响应式 Hook 审批，选择仅自动处理低风险允许或全自动处理，并保留脱敏的 30 天本地审计记录。
 - **一键跳回现场** - 快速回到对应的 iTerm2、Ghostty、Terminal.app、tmux pane 或 IDE 窗口。
 - **SSH 终端支持** - 可以通过 SSH 自动引导远程 PingIslandBridge，把远程 Claude 兼容 hooks 重写到桥接入口，并把远程终端里的事件统一回流到你本机的 Island 界面。
 - **多 Agent 统一收口** - 在一个菜单栏入口里持续跟踪 Claude Code、Codex、Gemini CLI、Hermes Agent、Pi Agent、Qwen Code、Kimi CLI、OpenClaw、OpenCode、Cursor、Qoder、CodeBuddy、WorkBuddy、GitHub Copilot 等兼容会话。
@@ -201,12 +202,7 @@ xcodebuild -project PingIsland.xcodeproj -scheme PingIsland -configuration Debug
 
 ## 设置面板
 
-Ping Island 当前提供 4 个设置分类：
-
-- **General** - 登录启动与基础行为
-- **Display** - 显示器选择与位置行为
-- **Mascot** - 宠物预览、客户端覆盖、动作状态
-- **Sound** - 事件声音、声音包模式、声音包导入
+**智能审批**分类用于配置 OpenAI 兼容接口、模型、Keychain API Key、判断规则、自动化模式、连接测试与本地审计记录。功能默认关闭，行为和隐私边界见[智能审批配置](docs/ai-approval.md)。
 
 ## 自定义音效
 

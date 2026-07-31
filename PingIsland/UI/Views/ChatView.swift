@@ -12,7 +12,7 @@ import os.log
 struct ChatView: View {
     let sessionId: String
     let initialSession: SessionState
-    let sessionMonitor: SessionMonitor
+    @ObservedObject var sessionMonitor: SessionMonitor
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject private var settings = AppSettings.shared
 
@@ -449,6 +449,7 @@ struct ChatView: View {
             tool: tool,
             toolInput: session.pendingToolInput,
             sessionAction: session.scopedApprovalAction,
+            aiApprovalState: sessionMonitor.aiApprovalState(for: sessionId),
             suppressControls: shouldSuppressPromptControls,
             onApprove: { approvePermission() },
             onApproveForSession: { approvePermissionForSession() },
@@ -1539,6 +1540,7 @@ struct ChatApprovalBar: View {
     let tool: String
     let toolInput: String?
     let sessionAction: SessionScopedApprovalAction?
+    let aiApprovalState: AIApprovalPresentationState?
     var suppressControls = false
     let onApprove: () -> Void
     let onApproveForSession: () -> Void
@@ -1550,77 +1552,81 @@ struct ChatApprovalBar: View {
     @State private var showSessionButton = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Tool info
-            VStack(alignment: .leading, spacing: 2) {
-                Text(MCPToolFormatter.formatToolName(tool))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(TerminalColors.amber)
-                if let input = toolInput {
-                    Text(input)
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 12) {
+                // Tool info
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(MCPToolFormatter.formatToolName(tool))
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(TerminalColors.amber)
+                    if let input = toolInput {
+                        Text(input)
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.5))
+                            .lineLimit(1)
+                    }
                 }
-            }
-            .opacity(showContent ? 1 : 0)
-            .offset(x: showContent ? 0 : -10)
+                .opacity(showContent ? 1 : 0)
+                .offset(x: showContent ? 0 : -10)
 
-            Spacer()
+                Spacer()
 
-            if suppressControls {
-                Text(appLocalized: "已保留在终端中处理")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.62))
-            } else {
-                // Deny button
-                Button {
-                    onDeny()
-                } label: {
-                    Text(AppLocalization.string("Deny"))
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(Color.white.opacity(0.1))
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .opacity(showDenyButton ? 1 : 0)
-                .scaleEffect(showDenyButton ? 1 : 0.8)
-
-                if let sessionAction {
+                if suppressControls {
+                    Text(appLocalized: "已保留在终端中处理")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.62))
+                } else {
                     Button {
-                        onApproveForSession()
+                        onDeny()
                     } label: {
-                        Text(AppLocalization.string(sessionAction.buttonTitleKey))
+                        Text(AppLocalization.string("Deny"))
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.white.opacity(0.92))
+                            .foregroundColor(.white.opacity(0.7))
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
-                            .background(TerminalColors.blue.opacity(0.26))
+                            .background(Color.white.opacity(0.1))
                             .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
-                    .opacity(showSessionButton ? 1 : 0)
-                    .scaleEffect(showSessionButton ? 1 : 0.8)
-                }
+                    .opacity(showDenyButton ? 1 : 0)
+                    .scaleEffect(showDenyButton ? 1 : 0.8)
 
-                // Allow button
-                Button {
-                    onApprove()
-                } label: {
-                    Text(AppLocalization.string("Allow"))
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.black)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(Color.white.opacity(0.95))
-                        .clipShape(Capsule())
+                    if let sessionAction {
+                        Button {
+                            onApproveForSession()
+                        } label: {
+                            Text(AppLocalization.string(sessionAction.buttonTitleKey))
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.white.opacity(0.92))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(TerminalColors.blue.opacity(0.26))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .opacity(showSessionButton ? 1 : 0)
+                        .scaleEffect(showSessionButton ? 1 : 0.8)
+                    }
+
+                    Button {
+                        onApprove()
+                    } label: {
+                        Text(AppLocalization.string("Allow"))
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.95))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(showAllowButton ? 1 : 0)
+                    .scaleEffect(showAllowButton ? 1 : 0.8)
                 }
-                .buttonStyle(.plain)
-                .opacity(showAllowButton ? 1 : 0)
-                .scaleEffect(showAllowButton ? 1 : 0.8)
+            }
+
+            if let aiApprovalState, !suppressControls {
+                AIApprovalStatusView(state: aiApprovalState)
             }
         }
         .frame(minHeight: 44)  // Consistent height with other bars
