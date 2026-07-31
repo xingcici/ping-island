@@ -114,6 +114,8 @@ xcodebuild -project PingIsland.xcodeproj -scheme PingIsland -configuration Relea
 
 默认会使用仓库里的 `docs/images/ping-island-dmg-installer-background.png` 作为 DMG 安装背景；如果你想在本地预览别的背景图，可以临时设置 `PING_ISLAND_DMG_BACKGROUND_SOURCE`。
 
+如果想在 GitHub 上构建相同的未签名安装包，可以手动运行 `PR Checks`，并启用 `build_artifact`。生成的 DMG 和 ZIP 会作为工作流产物保留 14 天；它们使用 ad-hoc 签名且未经过 notarization。
+
 如果你想通过 GitHub Actions 产出带 `Developer ID` 签名并完成 notarization 的发布包，请先按 [docs/sparkle-release.md](docs/sparkle-release.md) 配好仓库 secrets，再运行 `.github/workflows/release-packages.yml`。官方 Homebrew Cask 发布说明见 [docs/homebrew-cask-release.md](docs/homebrew-cask-release.md)。
 
 完整的 Sparkle / notarization 发布流程见 [docs/sparkle-release.md](docs/sparkle-release.md)。

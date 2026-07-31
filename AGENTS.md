@@ -143,6 +143,7 @@ This file is a routing layer for coding agents working in this repo. Keep it sho
   - `./scripts/build.sh`
   - `./scripts/package-release.sh`
   - `./scripts/package-unsigned.sh`
+  - GitHub Actions `PR Checks` can build 14-day unsigned DMG / ZIP artifacts when manually dispatched with `build_artifact` enabled
   - `./scripts/create-release.sh`
   - `./scripts/generate-keys.sh`
   - GitHub Actions: `.github/workflows/release-packages.yml` imports a Developer ID certificate from repository secrets, notarizes the exported app, publishes signed `dmg` / `zip` assets plus a zipped Linux `PingIslandBridge` remote-agent payload to the matching GitHub Release for a `v*` tag or manual dispatch, and should treat the DMG as the primary manual-install artifact

@@ -118,6 +118,7 @@ To create a locally shareable unsigned package for local testing:
 The script re-signs the built app bundle with a consistent ad-hoc signature before creating the `.dmg` and `.zip`, which helps embedded frameworks launch more reliably on another machine. The package is still unsigned for distribution and not notarized, so first launch may still require `Open` from Finder's context menu or manual quarantine removal.
 The generated files land in `releases/unsigned/` as `PingIsland-<version>.dmg` and `PingIsland-<version>.zip`.
 The DMG uses the repo-tracked installer artwork at `docs/images/ping-island-dmg-installer-background.png` by default; set `PING_ISLAND_DMG_BACKGROUND_SOURCE` if you want to preview a different background locally.
+To build the same unsigned packages on GitHub, manually run the `PR Checks` workflow with `build_artifact` enabled. The DMG and ZIP are uploaded as a workflow artifact for 14 days; they are ad-hoc signed and not notarized.
 
 To create signed and notarized release packages in GitHub Actions, configure the release secrets described in [docs/sparkle-release.md](docs/sparkle-release.md) and run `.github/workflows/release-packages.yml` against a `v*` tag or the manual workflow dispatch input. Official Homebrew Cask release notes are documented in [docs/homebrew-cask-release.md](docs/homebrew-cask-release.md).
 
