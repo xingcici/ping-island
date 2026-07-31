@@ -1669,6 +1669,13 @@ struct InlineApprovalButtons: View {
         switch state.phase {
         case .evaluating:
             return AppLocalization.string("智能审批判断中，可随时手动处理")
+        case .automaticallyResolved(let decision, let risk, let reason):
+            return AppLocalization.format(
+                "模型%@ · %@：%@",
+                AppLocalization.string(decision == .approve ? "已自动允许" : "已自动拒绝"),
+                AppLocalization.string(risk.title),
+                reason
+            )
         case .recommendation(let decision, let risk, let reason):
             return AppLocalization.format(
                 "模型%@ · %@：%@",
