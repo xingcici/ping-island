@@ -2436,8 +2436,10 @@ actor SessionStore {
             }
             count += 1
         }
+        let sessionIDPrefix = String(session.sessionId.prefix(8))
+        let toolUseIDPrefix = String(toolUseId.prefix(12))
         Self.logger.info(
-            "Queued permission tool session=\(session.sessionId.prefix(8), privacy: .public) tool=\(toolUseId.prefix(12), privacy: .public) pendingCount=\(pendingCount)"
+            "Queued permission tool session=\(sessionIDPrefix, privacy: .public) tool=\(toolUseIDPrefix, privacy: .public) pendingCount=\(pendingCount)"
         )
     }
 
