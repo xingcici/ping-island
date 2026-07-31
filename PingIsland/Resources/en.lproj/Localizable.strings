@@ -673,7 +673,6 @@
 "清空审计记录" = "Clear audit records";
 "导出审计记录" = "Export audit records";
 "会话 %@" = "Session %@";
-"导出失败：%@" = "Export failed: %@";
 "正在替你判断这次操作…" = "Reviewing this operation for you…";
 "先忙你的，需要确认时我再叫你" = "Keep going—I’ll let you know if confirmation is needed";
 "智能审批判断中，可随时手动处理" = "AI review in progress; you can respond manually at any time";
