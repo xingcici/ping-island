@@ -666,7 +666,9 @@ actor SessionStore {
             session.suppressInAppPromptControls = false
         }
 
-        if event.event == "PermissionRequest", let toolUseId = event.toolUseId {
+        if event.event == "PermissionRequest",
+           !event.isAskUserQuestionRequest,
+           let toolUseId = event.toolUseId {
             Self.logger.debug("Setting tool \(toolUseId.prefix(12), privacy: .public) status to waitingForApproval")
             ensurePendingApprovalTool(for: event, toolUseId: toolUseId, in: &session)
             updateToolStatus(in: &session, toolId: toolUseId, status: .waitingForApproval)
