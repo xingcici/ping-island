@@ -147,6 +147,48 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         ))
     }
 
+    func testPresentationPolicyKeepsEvaluationSilentUnlessHintIsEnabled() {
+        let evaluating = AIApprovalPresentationState(toolUseID: "tool-1", phase: .evaluating)
+
+        XCTAssertFalse(AIApprovalPresentationPolicy.shouldPresentManualApproval(
+            needsApprovalResponse: true,
+            state: evaluating
+        ))
+        XCTAssertFalse(AIApprovalPresentationPolicy.shouldPresentAutomatically(
+            needsApprovalResponse: true,
+            state: evaluating,
+            showEvaluatingHint: false
+        ))
+        XCTAssertTrue(AIApprovalPresentationPolicy.shouldPresentAutomatically(
+            needsApprovalResponse: true,
+            state: evaluating,
+            showEvaluatingHint: true
+        ))
+    }
+
+    func testPresentationPolicySurfacesManualRecommendationAndFailure() {
+        let recommendation = AIApprovalPresentationState(
+            toolUseID: "tool-1",
+            phase: .recommendation(decision: .approve, risk: .high, reason: "Needs review")
+        )
+        let failed = AIApprovalPresentationState(
+            toolUseID: "tool-2",
+            phase: .failed(message: "Unavailable")
+        )
+
+        for state in [recommendation, failed] {
+            XCTAssertTrue(AIApprovalPresentationPolicy.shouldPresentManualApproval(
+                needsApprovalResponse: true,
+                state: state
+            ))
+            XCTAssertTrue(AIApprovalPresentationPolicy.shouldPresentAutomatically(
+                needsApprovalResponse: true,
+                state: state,
+                showEvaluatingHint: false
+            ))
+        }
+    }
+
     func testContextBuilderPreservesCompleteConversationAndToolFields() throws {
         let intervention = SessionIntervention(
             id: "tool-1",

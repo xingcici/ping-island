@@ -3485,18 +3485,23 @@ private struct SettingsPanelContentView: View {
                             .foregroundColor(.white.opacity(0.55))
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Toggle(isOn: $settings.aiApprovalShowEvaluatingHint) {
+                        HStack(alignment: .center, spacing: 12) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(appLocalized: "判断中显示轻量提示")
+                                Text(appLocalized: "审批中显示可爱提示")
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundColor(.white.opacity(0.86))
                                 Text(appLocalized: "开启后只显示一个可爱的处理中提示，不提供审批按钮，也不播放人工确认提示音。")
                                     .font(.system(size: 10, weight: .medium))
                                     .foregroundColor(.white.opacity(0.5))
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
+
+                            Spacer(minLength: 12)
+
+                            Toggle("", isOn: $settings.aiApprovalShowEvaluatingHint)
+                                .labelsHidden()
+                                .settingsCompactSwitch()
                         }
-                        .toggleStyle(.switch)
-                        .settingsCompactSwitch()
 
                         if settings.aiApprovalManualRiskLevels.isEmpty {
                             Label("未选择任何等级，所有模型决定都将自动执行", systemImage: "exclamationmark.triangle.fill")

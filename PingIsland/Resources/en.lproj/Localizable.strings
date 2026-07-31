@@ -639,7 +639,7 @@
 "模型判断期间保持静默；只有选中的风险等级或模型判断失败时才提醒你确认。" = "Stay quiet while the model reviews. Ask for confirmation only for selected risk levels or when model review fails.";
 "需要人工确认的风险等级" = "Risk levels requiring confirmation";
 "选中的等级由你确认；未选中的等级会自动执行模型给出的允许或拒绝。" = "You confirm selected levels; unselected levels automatically execute the model's allow or deny decision.";
-"判断中显示轻量提示" = "Show a lightweight review hint";
+"审批中显示可爱提示" = "Show a friendly review hint";
 "开启后只显示一个可爱的处理中提示，不提供审批按钮，也不播放人工确认提示音。" = "Show only a friendly in-progress hint, without approval buttons or the manual-attention sound.";
 "未选择任何等级，所有模型决定都将自动执行" = "No levels selected; every model decision will run automatically";
 "已选择" = "Selected";

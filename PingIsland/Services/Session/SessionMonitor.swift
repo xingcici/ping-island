@@ -183,7 +183,7 @@ class SessionMonitor: ObservableObject {
                 "hook_received",
                 sessionID: effectiveEvent.sessionId,
                 toolUseID: toolUseID,
-                details: "event=\(effectiveEvent.event) ingress=\(effectiveEvent.ingress.rawValue)"
+                details: "event=\(effectiveEvent.event) ingress=\(effectiveEvent.ingress.rawValue) evaluatingPresentation=\(AppSettings.shared.aiApprovalShowEvaluatingHint ? "hint" : "silent")"
             )
             setAIApprovalState(
                 AIApprovalPresentationState(toolUseID: toolUseID, phase: .evaluating),
@@ -572,13 +572,16 @@ class SessionMonitor: ObservableObject {
     }
 
     func shouldPresentApproval(for session: SessionState) -> Bool {
-        session.needsApprovalResponse && aiApprovalStates[session.sessionId]?.isEvaluating != true
+        AIApprovalPresentationPolicy.shouldPresentManualApproval(
+            needsApprovalResponse: session.needsApprovalResponse,
+            state: aiApprovalStates[session.sessionId]
+        )
     }
 
     func shouldPresentAIApprovalEvaluatingHint(for session: SessionState) -> Bool {
-        AppSettings.shared.aiApprovalShowEvaluatingHint
-            && session.needsApprovalResponse
+        session.needsApprovalResponse
             && aiApprovalStates[session.sessionId]?.isEvaluating == true
+            && AppSettings.shared.aiApprovalShowEvaluatingHint
     }
 
     func sessionsEligibleForManualAttention(from sessions: [SessionState]) -> [SessionState] {
@@ -589,9 +592,11 @@ class SessionMonitor: ObservableObject {
 
     func sessionsEligibleForAutomaticPresentation(from sessions: [SessionState]) -> [SessionState] {
         sessions.filter { session in
-            !session.needsApprovalResponse
-                || shouldPresentApproval(for: session)
-                || shouldPresentAIApprovalEvaluatingHint(for: session)
+            AIApprovalPresentationPolicy.shouldPresentAutomatically(
+                needsApprovalResponse: session.needsApprovalResponse,
+                state: aiApprovalStates[session.sessionId],
+                showEvaluatingHint: AppSettings.shared.aiApprovalShowEvaluatingHint
+            )
         }
     }
 

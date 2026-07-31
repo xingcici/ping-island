@@ -995,7 +995,8 @@ struct NotchView: View {
     }
 
     private func handlePendingSessionsChange(_ sessions: [SessionState]) {
-        let currentIds = Set(sessions.map { $0.stableId })
+        let presentableSessions = sessionMonitor.sessionsEligibleForAutomaticPresentation(from: sessions)
+        let currentIds = Set(presentableSessions.map { $0.stableId })
         let newPendingIds = currentIds.subtracting(previousPendingIds)
 
         if areReminderNotificationsSuppressed {

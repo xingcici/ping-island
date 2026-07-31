@@ -116,6 +116,25 @@ struct AIApprovalPresentationState: Equatable, Sendable {
     }
 }
 
+enum AIApprovalPresentationPolicy {
+    nonisolated static func shouldPresentManualApproval(
+        needsApprovalResponse: Bool,
+        state: AIApprovalPresentationState?
+    ) -> Bool {
+        needsApprovalResponse && state?.isEvaluating != true
+    }
+
+    nonisolated static func shouldPresentAutomatically(
+        needsApprovalResponse: Bool,
+        state: AIApprovalPresentationState?,
+        showEvaluatingHint: Bool
+    ) -> Bool {
+        guard needsApprovalResponse else { return true }
+        guard state?.isEvaluating == true else { return true }
+        return showEvaluatingHint
+    }
+}
+
 struct AIApprovalConfiguration: Equatable, Sendable {
     let isEnabledByUser: Bool
     let manualRiskLevels: Set<AIApprovalRisk>
