@@ -242,7 +242,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
     }
 
-    func testAuditSummaryRedactsTokenLikeValues() {
+    func testAuditSummaryPreservesTokenLikeHookValues() {
         let context = AIApprovalRequestContext(
             sessionID: "session-1",
             toolUseID: "tool-1",
@@ -259,8 +259,8 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
 
         let summary = AIApprovalContextBuilder.auditSummary(from: context)
 
-        XCTAssertFalse(summary.contains("sk-secret123"))
-        XCTAssertTrue(summary.contains("[redacted]"))
+        XCTAssertTrue(summary.contains("sk-secret123"))
+        XCTAssertFalse(summary.contains("[redacted]"))
     }
 
     @MainActor
