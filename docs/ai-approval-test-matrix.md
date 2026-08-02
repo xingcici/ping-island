@@ -5,8 +5,8 @@
 | 领域 | 自动化验证 | 主要测试 |
 | --- | --- | --- |
 | OpenAI 兼容协议 | URL 补全、Bearer Header、JSON Schema、400/422 降级、429 重试、401 不重试、超时、非法 JSON/枚举/空理由、配置校验 | `AIApprovalDecisionServiceTests` |
-| 风险策略 | 允许/拒绝 × 低/中/高 × 所有人工确认多选组合 | `testExecutionPolicyCoversEveryRiskDecisionAndManualSelection` |
-| 同会话并发 | 3 个不同工具乱序返回后都保留；自动允许、自动拒绝和人工确认混排；人工项依次处理 | `AIApprovalConcurrencyIntegrationTests` |
+| 风险策略 | 允许/拒绝 × 低/中/高 × 所有人工确认多选组合；`git reset --hard` 本地高风险下限 | `testExecutionPolicyCoversEveryRiskDecisionAndManualSelection`、`testRiskFloorPromotesGitResetHardToHighRisk` |
+| 同会话并发 | 12 个 Hook 突发入队不丢失；3 个不同工具乱序返回后都保留；自动允许、自动拒绝和人工确认混排；人工项依次处理 | `ClaudeApprovalStateTests`、`AIApprovalConcurrencyIntegrationTests` |
 | 重复 Hook | 同一 `sessionID + toolUseID` 并发投递 12 次，只调用模型一次、只审计一次、只回调一次 | `testDuplicateConcurrentHookDeliveryEvaluatesAndRespondsOnlyOnce` |
 | 跨会话高并发 | 16 个会话同时审批，全部完成且模型并发不超过 4 | `testHighVolumeCrossSessionHooksRespectLimitAndAllComplete` |
 | 人工竞态 | 模型处理中用户先确认，模型任务取消、记为用户接管且不会再次回调或重新弹窗 | `testUserResolutionDuringEvaluationCancelsModelWithoutDuplicateHookResponse` |

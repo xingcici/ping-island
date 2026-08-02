@@ -249,6 +249,27 @@ enum AIApprovalExecutionPolicy {
     }
 }
 
+enum AIApprovalRiskFloor {
+    nonisolated static func applying(
+        to decision: AIApprovalDecision,
+        context: AIApprovalRequestContext
+    ) -> AIApprovalDecision {
+        guard decision.risk != .high,
+              let command = context.toolInput["command"]?.value as? String,
+              command.range(
+                of: #"\bgit\b[^\n;&|]*\breset\b[^\n;&|]*--hard\b"#,
+                options: [.regularExpression, .caseInsensitive]
+              ) != nil else {
+            return decision
+        }
+        return AIApprovalDecision(
+            decision: decision.decision,
+            risk: .high,
+            reason: decision.reason
+        )
+    }
+}
+
 enum AIApprovalServiceError: LocalizedError, Equatable {
     case invalidBaseURL
     case insecureHTTPHost
@@ -869,7 +890,14 @@ final class AIApprovalDecisionService {
                 toolUseID: context.toolUseID,
                 details: "model=\(configuration.model)"
             )
-            let evaluation = try await client.decide(configuration: configuration, context: context)
+            let rawEvaluation = try await client.decide(configuration: configuration, context: context)
+            let evaluation = AIApprovalEvaluation(
+                decision: AIApprovalRiskFloor.applying(
+                    to: rawEvaluation.decision,
+                    context: context
+                ),
+                latencyMilliseconds: rawEvaluation.latencyMilliseconds
+            )
             AIApprovalRuntimeLog.record(
                 "model_completed",
                 sessionID: context.sessionID,

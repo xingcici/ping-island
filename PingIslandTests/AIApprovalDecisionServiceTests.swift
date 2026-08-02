@@ -340,6 +340,51 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         }
     }
 
+    func testRiskFloorPromotesGitResetHardToHighRisk() {
+        let mediumDecision = AIApprovalDecision(
+            decision: .approve,
+            risk: .medium,
+            reason: "Scoped temporary repository"
+        )
+        let destructiveContext = AIApprovalRequestContext(
+            sessionID: "session-1",
+            toolUseID: "tool-reset-hard",
+            ingress: .hookBridge,
+            provider: "codex",
+            client: "Codex",
+            cwd: "/workspace/project",
+            toolName: "Bash",
+            interventionTitle: "Approve command",
+            interventionMessage: "Run git reset",
+            toolInput: [
+                "command": AnyCodable("/usr/bin/git -C /workspace/project reset --hard")
+            ],
+            recentConversation: []
+        )
+        let reversibleContext = AIApprovalRequestContext(
+            sessionID: "session-1",
+            toolUseID: "tool-reset-soft",
+            ingress: .hookBridge,
+            provider: "codex",
+            client: "Codex",
+            cwd: "/workspace/project",
+            toolName: "Bash",
+            interventionTitle: "Approve command",
+            interventionMessage: "Run git reset",
+            toolInput: ["command": AnyCodable("git reset --soft HEAD~1")],
+            recentConversation: []
+        )
+
+        XCTAssertEqual(
+            AIApprovalRiskFloor.applying(to: mediumDecision, context: destructiveContext).risk,
+            .high
+        )
+        XCTAssertEqual(
+            AIApprovalRiskFloor.applying(to: mediumDecision, context: reversibleContext).risk,
+            .medium
+        )
+    }
+
     func testPresentationPolicyKeepsEvaluationSilentUnlessHintIsEnabled() {
         let evaluating = AIApprovalPresentationState(toolUseID: "tool-1", phase: .evaluating)
 

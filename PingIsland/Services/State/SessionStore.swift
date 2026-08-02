@@ -552,6 +552,17 @@ actor SessionStore {
             for: event,
             session: session
         )
+        if let latestSession = sessions[sessionId] {
+            let mergedPendingApprovalCount = Self.mergeConcurrentPendingApprovalTools(
+                from: latestSession,
+                into: &session
+            )
+            if mergedPendingApprovalCount > 0 {
+                Self.logger.info(
+                    "Rebased concurrent permission queue session=\(sessionId.prefix(8), privacy: .public) mergedCount=\(mergedPendingApprovalCount)"
+                )
+            }
+        }
         let newPhase: SessionPhase = shouldPreserveEndedStopForAnsweredQuestion || codeBuddyCLINotificationIntervention != nil
             ? .waitingForInput
             : event.determinePhase()
@@ -2443,6 +2454,34 @@ actor SessionStore {
         Self.logger.info(
             "Queued permission tool session=\(sessionIDPrefix, privacy: .public) tool=\(toolUseIDPrefix, privacy: .public) pendingCount=\(pendingCount)"
         )
+    }
+
+    @discardableResult
+    nonisolated static func mergeConcurrentPendingApprovalTools(
+        from latestSession: SessionState,
+        into session: inout SessionState
+    ) -> Int {
+        var mergedCount = 0
+        for latestItem in latestSession.chatItems {
+            guard case .toolCall(let latestTool) = latestItem.type else { continue }
+
+            if let currentIndex = session.chatItems.firstIndex(where: { $0.id == latestItem.id }),
+               case .toolCall(let currentTool) = session.chatItems[currentIndex].type {
+                if currentTool.status == .waitingForApproval || latestTool.status == .waitingForApproval {
+                    if currentTool.status != latestTool.status {
+                        mergedCount += 1
+                    }
+                    session.chatItems[currentIndex] = latestItem
+                }
+                continue
+            }
+
+            if latestTool.status == .waitingForApproval {
+                session.chatItems.append(latestItem)
+                mergedCount += 1
+            }
+        }
+        return mergedCount
     }
 
     private func shouldClearIntervention(for event: HookEvent, newPhase: SessionPhase, currentIntervention: SessionIntervention?) -> Bool {

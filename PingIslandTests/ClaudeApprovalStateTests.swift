@@ -168,6 +168,82 @@ final class ClaudeApprovalStateTests: XCTestCase {
         await store.setPendingHookResponseCancellationHandlerForTesting(nil)
     }
 
+    func testConcurrentPermissionRequestBurstPreservesEveryTool() async {
+        let sessionId = "claude-approval-burst-\(UUID().uuidString)"
+        let store = SessionStore.shared
+        let toolUseIds = (0..<12).map { "tool-burst-\($0)" }
+        let events = toolUseIds.map {
+            makeToolEvent(
+                sessionId: sessionId,
+                event: "PermissionRequest",
+                status: "waiting_for_approval",
+                tool: "Bash",
+                toolUseId: $0
+            )
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            for event in events {
+                group.addTask {
+                    await store.process(.hookReceived(event))
+                }
+            }
+        }
+
+        var session = await store.session(for: sessionId)
+        let pendingToolUseIds = Set(session?.chatItems.compactMap { item -> String? in
+            guard case .toolCall(let tool) = item.type,
+                  tool.status == .waitingForApproval else {
+                return nil
+            }
+            return item.id
+        } ?? [])
+        XCTAssertEqual(pendingToolUseIds, Set(toolUseIds))
+
+        for toolUseId in toolUseIds {
+            await store.process(.permissionApproved(sessionId: sessionId, toolUseId: toolUseId))
+        }
+
+        session = await store.session(for: sessionId)
+        XCTAssertEqual(session?.phase, .processing)
+        XCTAssertFalse(session?.needsApprovalResponse ?? true)
+        await store.process(.sessionArchived(sessionId: sessionId))
+    }
+
+    func testConcurrentPendingApprovalMergeKeepsLatestQueueAndResolvedStatuses() {
+        var staleSession = SessionState(
+            sessionId: "session-stale",
+            cwd: "/workspace/project",
+            chatItems: [
+                toolItem(id: "tool-existing", status: .waitingForApproval),
+                toolItem(id: "tool-resolved", status: .waitingForApproval)
+            ]
+        )
+        let latestSession = SessionState(
+            sessionId: "session-stale",
+            cwd: "/workspace/project",
+            chatItems: [
+                toolItem(id: "tool-existing", status: .waitingForApproval),
+                toolItem(id: "tool-new", status: .waitingForApproval),
+                toolItem(id: "tool-resolved", status: .running)
+            ]
+        )
+
+        SessionStore.mergeConcurrentPendingApprovalTools(
+            from: latestSession,
+            into: &staleSession
+        )
+
+        let statuses = Dictionary(uniqueKeysWithValues: staleSession.chatItems.compactMap { item in
+            guard case .toolCall(let tool) = item.type else { return nil }
+            return (item.id, tool.status)
+        })
+        XCTAssertEqual(statuses["tool-existing"], .waitingForApproval)
+        XCTAssertEqual(statuses["tool-new"], .waitingForApproval)
+        XCTAssertEqual(statuses["tool-resolved"], .running)
+        XCTAssertEqual(staleSession.chatItems.filter { $0.id == "tool-new" }.count, 1)
+    }
+
     func testCachedToolUseIdClearsBridgeApprovalInterventionAfterApproval() async {
         let sessionId = "claude-approval-cached-\(UUID().uuidString)"
         let store = SessionStore.shared
@@ -268,6 +344,21 @@ final class ClaudeApprovalStateTests: XCTestCase {
             toolUseId: toolUseId,
             notificationType: nil,
             message: nil
+        )
+    }
+
+    private func toolItem(id: String, status: ToolStatus) -> ChatHistoryItem {
+        ChatHistoryItem(
+            id: id,
+            type: .toolCall(ToolCallItem(
+                name: "Bash",
+                input: ["command": "true"],
+                status: status,
+                result: nil,
+                structuredResult: nil,
+                subagentTools: []
+            )),
+            timestamp: Date()
         )
     }
 }
