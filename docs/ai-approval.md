@@ -27,3 +27,7 @@ Ping Island 可以把响应式 Hook 审批交给用户配置的 OpenAI 兼容模
 审计记录在 Application Support 下保留 30 天，最多 1,000 条，可从设置页清空或导出 JSON。设置页只展示工具摘要、决定、风险、理由和可复制的会话 ID；导出文件包含完整 `sessionID`、`toolUseID`、工作目录、审批内容、工具参数和用户/助手上下文，不包含 API Key。
 
 智能审批过程还会写入 `com.wudanwu.pingisland` / `AIApproval` 统一日志，记录 Hook 接收、任务排队、模型开始与重试、判断完成、人工分流、自动回调、用户接管和失败阶段。日志带 `sessionID` 与 `toolUseID`，可随应用诊断日志一起导出。
+
+## 回归验证
+
+根 Xcode 测试包含确定性的智能审批并发场景：同一会话同时提交 3 个 Hook，假模型按不同延迟乱序返回高风险结果，测试必须观察到 3 条人工审批记录，并连续确认 3 次直至工具队列清空。该用例与请求状态策略、SessionStore 并发审批队列、设置持久化和悬浮提示布局测试一起由 GitHub Actions `PR Checks` 执行。

@@ -33,6 +33,7 @@ class SessionMonitor: ObservableObject {
     private var questionDraftCache = SessionQuestionDraftCache()
     private var telemetryPendingAttentionSessionIDs: Set<String> = []
     private let aiApprovalService: AIApprovalDecisionService
+    private let aiApprovalSettings: AppSettingsStore
     private var aiApprovalRequestStates = AIApprovalRequestStateStore()
     private var aiApprovalTasks: [AIApprovalRequestKey: Task<Void, Never>] = [:]
     private var aiApprovalAuditRecordIDs: [AIApprovalRequestKey: UUID] = [:]
@@ -40,10 +41,12 @@ class SessionMonitor: ObservableObject {
     init(
         runtimeCoordinator: any RuntimeCoordinating = RuntimeCoordinator.shared,
         aiApprovalService: AIApprovalDecisionService? = nil,
+        aiApprovalSettings: AppSettingsStore = AppSettingsStore.shared,
         observeSharedState: Bool = true
     ) {
         self.runtimeCoordinator = runtimeCoordinator
         self.aiApprovalService = aiApprovalService ?? .shared
+        self.aiApprovalSettings = aiApprovalSettings
         self.shouldRefreshUsage = !Self.isRunningUnderXCTest
         guard observeSharedState else { return }
         if shouldRefreshUsage {
@@ -62,7 +65,7 @@ class SessionMonitor: ObservableObject {
 
         InterruptWatcherManager.shared.delegate = self
 
-        AppSettings.shared.objectWillChange
+        aiApprovalSettings.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.refreshVisibleSessions()
@@ -180,7 +183,7 @@ class SessionMonitor: ObservableObject {
                 "hook_received",
                 sessionID: effectiveEvent.sessionId,
                 toolUseID: toolUseID,
-                details: "event=\(effectiveEvent.event) ingress=\(effectiveEvent.ingress.rawValue) evaluatingPresentation=\(AppSettings.shared.aiApprovalShowEvaluatingHint ? "hint" : "silent")"
+                details: "event=\(effectiveEvent.event) ingress=\(effectiveEvent.ingress.rawValue) evaluatingPresentation=\(aiApprovalSettings.aiApprovalShowEvaluatingHint ? "hint" : "silent")"
             )
             setAIApprovalState(
                 AIApprovalPresentationState(toolUseID: toolUseID, phase: .evaluating),
@@ -578,7 +581,7 @@ class SessionMonitor: ObservableObject {
     func shouldPresentAIApprovalEvaluatingHint(for session: SessionState) -> Bool {
         session.needsApprovalResponse
             && aiApprovalStates[session.sessionId]?.isEvaluating == true
-            && AppSettings.shared.aiApprovalShowEvaluatingHint
+            && aiApprovalSettings.aiApprovalShowEvaluatingHint
     }
 
     func sessionsEligibleForManualAttention(from sessions: [SessionState]) -> [SessionState] {
@@ -592,13 +595,13 @@ class SessionMonitor: ObservableObject {
             AIApprovalPresentationPolicy.shouldPresentAutomatically(
                 needsApprovalResponse: session.needsApprovalResponse,
                 state: aiApprovalStates[session.sessionId],
-                showEvaluatingHint: AppSettings.shared.aiApprovalShowEvaluatingHint
+                showEvaluatingHint: aiApprovalSettings.aiApprovalShowEvaluatingHint
             )
         }
     }
 
     private func eligibleAIApprovalConfiguration(for event: HookEvent) -> AIApprovalConfiguration? {
-        let configuration = aiApprovalService.configuration(from: AppSettings.shared)
+        let configuration = aiApprovalService.configuration(from: aiApprovalSettings)
         guard configuration.isEnabled,
               event.ingress == .hookBridge || event.ingress == .remoteBridge,
               event.expectsResponse,
@@ -726,8 +729,8 @@ class SessionMonitor: ObservableObject {
         }
 
         guard AIApprovalExecutionPolicy.shouldExecute(
-            isEnabled: AppSettings.shared.aiApprovalEnabled,
-            manualRiskLevels: AppSettings.shared.aiApprovalManualRiskLevels,
+            isEnabled: aiApprovalSettings.aiApprovalEnabled,
+            manualRiskLevels: aiApprovalSettings.aiApprovalManualRiskLevels,
             decision: evaluation.decision
         ) else {
             guard await isPendingAIApproval(sessionID: context.sessionID, toolUseID: toolUseID) else {
