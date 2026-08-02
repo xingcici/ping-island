@@ -148,7 +148,7 @@ final class AIApprovalConcurrencyIntegrationTests: XCTestCase {
         }
     }
 
-    func testConcurrentHighRiskHooksRemainQueuedForSequentialManualReview() async throws {
+    func testConcurrentHighRiskCodexHooksRemainQueuedAcrossIdleRefreshForSequentialManualReview() async throws {
         let settingsSuiteName = "ai-approval-concurrency-settings-\(UUID().uuidString)"
         let settingsDefaults = try XCTUnwrap(UserDefaults(suiteName: settingsSuiteName))
         defer {
@@ -186,8 +186,8 @@ final class AIApprovalConcurrencyIntegrationTests: XCTestCase {
                 cwd: "/workspace/project",
                 event: "PermissionRequest",
                 status: "waiting_for_approval",
-                provider: .claude,
-                clientInfo: SessionClientInfo(kind: .claudeCode, name: "Claude Code"),
+                provider: .codex,
+                clientInfo: SessionClientInfo.codexApp(threadId: sessionID),
                 pid: nil,
                 tty: nil,
                 tool: "Bash",
@@ -235,6 +235,29 @@ final class AIApprovalConcurrencyIntegrationTests: XCTestCase {
                 return pendingToolUseIDs(in: session).count == expectedRemainingCount - 1
             }
             XCTAssertTrue(requestWasResolved)
+
+            if expectedRemainingCount > 1 {
+                await SessionStore.shared.upsertCodexSession(
+                    sessionId: sessionID,
+                    name: "Codex",
+                    preview: "Idle refresh during manual approval queue",
+                    cwd: "/workspace/project",
+                    phase: .idle,
+                    intervention: nil,
+                    clientInfo: SessionClientInfo.codexApp(threadId: sessionID),
+                    activityAt: Date().addingTimeInterval(Double(expectedRemainingCount))
+                )
+                let nextRecommendationRemainsVisible = await eventually {
+                    guard let session = await SessionStore.shared.session(for: sessionID),
+                          let activeToolUseID = session.activePermission?.toolUseId,
+                          let state = monitor.aiApprovalState(for: sessionID) else {
+                        return false
+                    }
+                    return pendingToolUseIDs(in: session).count == expectedRemainingCount - 1
+                        && state.toolUseID == activeToolUseID
+                }
+                XCTAssertTrue(nextRecommendationRemainsVisible)
+            }
         }
 
         XCTAssertEqual(handledToolUseIDs, toolUseIDs)

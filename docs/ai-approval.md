@@ -2,7 +2,7 @@
 
 Ping Island 可以把响应式 Hook 审批交给用户配置的 OpenAI 兼容模型判断。此功能默认关闭，不改变 Hook 安装内容，也不处理 AskUserQuestion、通知型事件、Codex App Server 或 Native Runtime 审批。
 
-Codex 的 rollout/app-server 会同时刷新会话历史。刷新时，本地仍在等待响应的 Hook 审批工具会合并回快照历史，避免高并发下较旧的 `running` 状态或暂时缺失的工具记录覆盖审批队列。
+Codex 的 rollout/app-server 会同时刷新会话历史和 thread-list 状态。刷新时，本地仍在等待响应的 Hook 审批工具会合并回快照历史，并恢复下一条审批 phase，避免高并发下较旧的 `running`、`idle` 状态或暂时缺失的工具记录覆盖审批队列。
 
 ## 配置
 

@@ -857,11 +857,45 @@ final class SessionStoreCodexInterventionTests: XCTestCase {
         XCTAssertEqual(pendingToolUseIds, Set(toolUseIds))
         XCTAssertTrue(session?.phase.isWaitingForApproval == true)
 
-        for toolUseId in toolUseIds {
-            await store.process(.permissionApproved(sessionId: sessionId, toolUseId: toolUseId))
+        var handledToolUseIds = Set<String>()
+        for expectedRemainingCount in stride(from: toolUseIds.count, through: 1, by: -1) {
+            guard let currentToolUseId = session?.activePermission?.toolUseId else {
+                XCTFail("Expected an active permission while the queue is not empty")
+                break
+            }
+            XCTAssertTrue(handledToolUseIds.insert(currentToolUseId).inserted)
+            await store.process(.permissionApproved(sessionId: sessionId, toolUseId: currentToolUseId))
+
+            if expectedRemainingCount > 1 {
+                await store.upsertCodexSession(
+                    sessionId: sessionId,
+                    name: "Codex",
+                    preview: "Thread list idle refresh",
+                    cwd: "/tmp/project",
+                    phase: .idle,
+                    intervention: nil,
+                    clientInfo: clientInfo,
+                    activityAt: startedAt.addingTimeInterval(Double(10 + expectedRemainingCount))
+                )
+            }
+
+            session = await store.session(for: sessionId)
+            let remainingToolUseIds = Set(session?.chatItems.compactMap { item -> String? in
+                guard case .toolCall(let tool) = item.type,
+                      tool.status == .waitingForApproval else {
+                    return nil
+                }
+                return item.id
+            } ?? [])
+            XCTAssertEqual(remainingToolUseIds.count, expectedRemainingCount - 1)
+            if expectedRemainingCount > 1 {
+                XCTAssertTrue(session?.phase.isWaitingForApproval == true)
+                XCTAssertNotEqual(session?.activePermission?.toolUseId, currentToolUseId)
+                XCTAssertNotNil(session?.activePermission?.toolInput?["command"])
+            }
         }
 
-        session = await store.session(for: sessionId)
+        XCTAssertEqual(handledToolUseIds, Set(toolUseIds))
         XCTAssertFalse(session?.needsApprovalResponse ?? true)
         await store.process(.sessionArchived(sessionId: sessionId))
     }

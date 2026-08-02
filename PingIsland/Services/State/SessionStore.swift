@@ -1151,6 +1151,21 @@ actor SessionStore {
         return pendingApprovalItem(in: session)
     }
 
+    @discardableResult
+    private func restorePendingApprovalPhase(
+        in session: inout SessionState,
+        preferring toolUseId: String?
+    ) -> PermissionContext? {
+        guard let pendingApproval = pendingApprovalContext(
+            in: session,
+            preferring: toolUseId
+        ) else {
+            return nil
+        }
+        session.phase = .waitingForApproval(pendingApproval)
+        return pendingApproval
+    }
+
     private func pendingApprovalItem(
         in session: SessionState,
         matching toolUseId: String? = nil
@@ -1176,7 +1191,7 @@ actor SessionStore {
         return PermissionContext(
             toolUseId: pendingTool.id,
             toolName: tool.name,
-            toolInput: nil,
+            toolInput: tool.input.mapValues { AnyCodable($0) },
             receivedAt: pendingTool.timestamp
         )
     }
@@ -1620,7 +1635,14 @@ actor SessionStore {
             ))
             if session.phase.canTransition(to: newPhase) {
                 session.phase = newPhase
-                Self.logger.debug("Switched to next pending tool: \(nextPending.id.prefix(12), privacy: .public)")
+                let remainingCount = session.chatItems.reduce(into: 0) { count, item in
+                    guard case .toolCall(let tool) = item.type,
+                          tool.status == .waitingForApproval else { return }
+                    count += 1
+                }
+                Self.logger.info(
+                    "Advanced approval queue session=\(sessionId.prefix(8), privacy: .public) resolved=\(toolUseId.prefix(12), privacy: .public) next=\(nextPending.id.prefix(12), privacy: .public) remaining=\(remainingCount, privacy: .public) decision=approve"
+                )
             }
         } else {
             // No more pending tools - transition to processing
@@ -1635,6 +1657,9 @@ actor SessionStore {
                     session.phase = .processing
                 }
             }
+            Self.logger.info(
+                "Drained approval queue session=\(sessionId.prefix(8), privacy: .public) resolved=\(toolUseId.prefix(12), privacy: .public) decision=approve"
+            )
         }
 
         clearResolvedApprovalIntervention(in: &session, toolUseId: toolUseId)
@@ -1761,7 +1786,14 @@ actor SessionStore {
             ))
             if session.phase.canTransition(to: newPhase) {
                 session.phase = newPhase
-                Self.logger.debug("Switched to next pending tool after denial: \(nextPending.id.prefix(12), privacy: .public)")
+                let remainingCount = session.chatItems.reduce(into: 0) { count, item in
+                    guard case .toolCall(let tool) = item.type,
+                          tool.status == .waitingForApproval else { return }
+                    count += 1
+                }
+                Self.logger.info(
+                    "Advanced approval queue session=\(sessionId.prefix(8), privacy: .public) resolved=\(toolUseId.prefix(12), privacy: .public) next=\(nextPending.id.prefix(12), privacy: .public) remaining=\(remainingCount, privacy: .public) decision=deny"
+                )
             }
         } else {
             // No more pending tools - transition to processing (Claude will handle denial)
@@ -1775,6 +1807,9 @@ actor SessionStore {
                     session.phase = .processing
                 }
             }
+            Self.logger.info(
+                "Drained approval queue session=\(sessionId.prefix(8), privacy: .public) resolved=\(toolUseId.prefix(12), privacy: .public) decision=deny"
+            )
         }
 
         clearResolvedApprovalIntervention(in: &session, toolUseId: toolUseId)
@@ -3607,6 +3642,8 @@ actor SessionStore {
             lastActivity: incomingActivityAt,
             createdAt: initialCreatedAt
         )
+        let pendingApprovalToolUseIdBeforeRefresh = session.activePermission?.toolUseId
+        let hadHookApprovalIngressBeforeRefresh = session.ingress == .hookBridge
         if let createdAt {
             session.createdAt = mergedCreatedAt(existing: session.createdAt, incoming: createdAt)
         }
@@ -3683,6 +3720,18 @@ actor SessionStore {
             session.lastActivity = mergedLastActivity(
                 existing: existingLastActivity,
                 incoming: incomingActivityAt
+            )
+        }
+
+        if let restoredApproval = restorePendingApprovalPhase(
+            in: &session,
+            preferring: pendingApprovalToolUseIdBeforeRefresh
+        ) {
+            if hadHookApprovalIngressBeforeRefresh {
+                session.ingress = .hookBridge
+            }
+            Self.logger.info(
+                "Codex upsert restored pending approval phase session=\(resolvedSessionId.prefix(8), privacy: .public) tool=\(restoredApproval.toolUseId.prefix(12), privacy: .public)"
             )
         }
 
@@ -3794,6 +3843,8 @@ actor SessionStore {
             lastActivity: snapshot.updatedAt,
             createdAt: snapshot.createdAt
         )
+        let pendingApprovalToolUseIdBeforeRefresh = session.activePermission?.toolUseId
+        let hadHookApprovalIngressBeforeRefresh = session.ingress == .hookBridge
         session.createdAt = mergedCreatedAt(existing: session.createdAt, incoming: snapshot.createdAt)
         let snapshotPhase = resolvedCodexSnapshotPhase(snapshot, currentSession: session)
 
@@ -3891,6 +3942,18 @@ actor SessionStore {
             session.lastActivity = mergedLastActivity(
                 existing: existingLastActivity,
                 incoming: snapshot.updatedAt
+            )
+        }
+
+        if let restoredApproval = restorePendingApprovalPhase(
+            in: &session,
+            preferring: pendingApprovalToolUseIdBeforeRefresh
+        ) {
+            if hadHookApprovalIngressBeforeRefresh {
+                session.ingress = .hookBridge
+            }
+            Self.logger.info(
+                "Codex snapshot restored pending approval phase session=\(resolvedSessionId.prefix(8), privacy: .public) tool=\(restoredApproval.toolUseId.prefix(12), privacy: .public)"
             )
         }
 
