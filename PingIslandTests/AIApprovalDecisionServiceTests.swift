@@ -238,6 +238,29 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         XCTAssertEqual(store.state(sessionID: "session-1", toolUseID: "tool-3"), failed)
     }
 
+    func testRequestPolicyKeepsQueuedToolsPendingBehindActivePermission() {
+        let session = SessionState(
+            sessionId: "session-1",
+            cwd: "/workspace/project",
+            phase: .waitingForApproval(PermissionContext(
+                toolUseId: "tool-3",
+                toolName: "Bash",
+                toolInput: nil,
+                receivedAt: Date()
+            )),
+            chatItems: [
+                pendingToolItem(id: "tool-1"),
+                pendingToolItem(id: "tool-2"),
+                pendingToolItem(id: "tool-3")
+            ]
+        )
+
+        XCTAssertTrue(AIApprovalRequestPolicy.isPending(session, toolUseID: "tool-1"))
+        XCTAssertTrue(AIApprovalRequestPolicy.isPending(session, toolUseID: "tool-2"))
+        XCTAssertTrue(AIApprovalRequestPolicy.isPending(session, toolUseID: "tool-3"))
+        XCTAssertFalse(AIApprovalRequestPolicy.isPending(session, toolUseID: "tool-missing"))
+    }
+
     func testContextBuilderPreservesCompleteConversationAndToolFields() throws {
         let intervention = SessionIntervention(
             id: "tool-1",
@@ -429,6 +452,21 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
                 toolInput: ["api_token": AnyCodable("complete-value")],
                 conversation: [.init(role: "user", content: "Inspect the README")]
             )
+        )
+    }
+
+    private func pendingToolItem(id: String) -> ChatHistoryItem {
+        ChatHistoryItem(
+            id: id,
+            type: .toolCall(ToolCallItem(
+                name: "Bash",
+                input: ["command": "true"],
+                status: .waitingForApproval,
+                result: nil,
+                structuredResult: nil,
+                subagentTools: []
+            )),
+            timestamp: Date()
         )
     }
 }

@@ -642,7 +642,7 @@ class SessionMonitor: ObservableObject {
                 details: "model=\(configuration.model)"
             )
 
-            if Self.approvalToolUseId(for: session) == toolUseID {
+            if AIApprovalRequestPolicy.isPending(session, toolUseID: toolUseID) {
                 setAIApprovalState(
                     AIApprovalPresentationState(toolUseID: toolUseID, phase: .evaluating),
                     for: session.sessionId
@@ -816,7 +816,9 @@ class SessionMonitor: ObservableObject {
         ingress: SessionIngress
     ) async {
         let session = await SessionStore.shared.session(for: sessionID)
-        let wasPending = session.map { Self.hasPendingApproval($0, toolUseID: toolUseID) } ?? false
+        let wasPending = session.map {
+            AIApprovalRequestPolicy.isPending($0, toolUseID: toolUseID)
+        } ?? false
         AIApprovalRuntimeLog.record(
             "local_resolution_started",
             sessionID: sessionID,
@@ -836,7 +838,7 @@ class SessionMonitor: ObservableObject {
 
         let updatedSession = await SessionStore.shared.session(for: sessionID)
         let remainsPending = updatedSession.map {
-            Self.hasPendingApproval($0, toolUseID: toolUseID)
+            AIApprovalRequestPolicy.isPending($0, toolUseID: toolUseID)
         } ?? false
         AIApprovalRuntimeLog.record(
             "local_resolution_completed",
@@ -877,32 +879,11 @@ class SessionMonitor: ObservableObject {
             return false
         }
         guard let session = await SessionStore.shared.session(for: sessionID),
-              Self.hasPendingApproval(session, toolUseID: toolUseID) else {
+              AIApprovalRequestPolicy.isPending(session, toolUseID: toolUseID) else {
             setAIApprovalState(nil, for: sessionID, toolUseID: toolUseID)
             return false
         }
         return true
-    }
-
-    private nonisolated static func hasPendingApproval(_ session: SessionState, toolUseID: String) -> Bool {
-        if session.activePermission?.toolUseId == toolUseID {
-            return true
-        }
-        if session.chatItems.contains(where: { item in
-            guard item.id == toolUseID,
-                  case .toolCall(let tool) = item.type else {
-                return false
-            }
-            return tool.status == .waitingForApproval
-        }) {
-            return true
-        }
-        if session.intervention?.matchesResolvedToolUseId(toolUseID) == true {
-            return true
-        }
-        return session.pendingInterventions.contains {
-            $0.kind == .approval && $0.matchesResolvedToolUseId(toolUseID)
-        }
     }
 
     private func markAIApprovalHandledByUser(sessionId: String) {
@@ -1265,7 +1246,10 @@ class SessionMonitor: ObservableObject {
         let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.sessionId, $0) })
         let staleStates = aiApprovalRequestStates.states.filter { requestKey, _ in
             guard let session = sessionsByID[requestKey.sessionID] else { return true }
-            return !Self.hasPendingApproval(session, toolUseID: requestKey.toolUseID)
+            return !AIApprovalRequestPolicy.isPending(
+                session,
+                toolUseID: requestKey.toolUseID
+            )
         }
         for (requestKey, _) in staleStates {
             aiApprovalRequestStates.remove(

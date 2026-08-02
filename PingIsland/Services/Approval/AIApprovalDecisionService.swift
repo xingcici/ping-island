@@ -153,6 +153,29 @@ struct AIApprovalRequestStateStore: Sendable {
     }
 }
 
+enum AIApprovalRequestPolicy {
+    nonisolated static func isPending(_ session: SessionState, toolUseID: String) -> Bool {
+        if session.activePermission?.toolUseId == toolUseID {
+            return true
+        }
+        if session.chatItems.contains(where: { item in
+            guard item.id == toolUseID,
+                  case .toolCall(let tool) = item.type else {
+                return false
+            }
+            return tool.status == .waitingForApproval
+        }) {
+            return true
+        }
+        if session.intervention?.matchesResolvedToolUseId(toolUseID) == true {
+            return true
+        }
+        return session.pendingInterventions.contains {
+            $0.kind == .approval && $0.matchesResolvedToolUseId(toolUseID)
+        }
+    }
+}
+
 enum AIApprovalPresentationPolicy {
     nonisolated static func shouldPresentManualApproval(
         needsApprovalResponse: Bool,
