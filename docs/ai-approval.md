@@ -30,4 +30,4 @@ Ping Island 可以把响应式 Hook 审批交给用户配置的 OpenAI 兼容模
 
 ## 回归验证
 
-根 Xcode 测试包含确定性的智能审批并发场景：同一会话同时提交 3 个 Hook，假模型按不同延迟乱序返回高风险结果，测试必须观察到 3 条人工审批记录，并连续确认 3 次直至工具队列清空。该用例与请求状态策略、SessionStore 并发审批队列、设置持久化和悬浮提示布局测试一起由 GitHub Actions `PR Checks` 执行。
+根 Xcode 测试使用确定性假模型覆盖协议错误、全部风险组合、同会话乱序队列、重复 Hook 去重、跨会话限流、人工抢先处理、失败降级、提示开关和完整审计导出。详细发布门槛见 [智能审批自动化测试矩阵](ai-approval-test-matrix.md)。这些用例与 Prototype Bridge E2E、设置持久化和悬浮提示布局测试一起由 GitHub Actions `PR Checks` 执行。

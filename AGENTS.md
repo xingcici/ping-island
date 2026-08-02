@@ -28,6 +28,7 @@ This file is a routing layer for coding agents working in this repo. Keep it sho
 - Session bridge for UI: `PingIsland/Services/Session/SessionMonitor.swift`
   - `AppDelegate` owns the runtime `SessionMonitor` and injects that same instance through `WindowManager` into `IslandPresentationCoordinator`; hook-owned transient UI state such as AI approval evaluation must not live on a second monitor instance
 - Model-assisted Hook approval configuration, OpenAI-compatible decision calls, Keychain credentials, and 30-day local audit: `PingIsland/Services/Approval/`, `PingIsland/Core/Settings.swift`, `PingIsland/UI/Views/SettingsWindowView.swift`
+  - Automated release coverage for model protocol failures, risk policy, duplicate and high-volume Hook concurrency, manual-response races, hint presentation, and full audit export is tracked in `docs/ai-approval-test-matrix.md`
 - Notch state and layout: `PingIsland/Core/NotchViewModel.swift`, `PingIsland/UI/Views/NotchView.swift`
 - App-wide low-power policy for background polling, event monitoring, UI animation tiers, and silent update gating: `PingIsland/Core/EnergyGovernor.swift`
 - User idle protection for temporarily routing blocking approvals/questions back to terminals: `PingIsland/Core/UserIdleAutoProtection.swift`, `PingIsland/Core/Settings.swift`, `PingIsland/Services/Hooks/BridgeRuntimeConfigWriter.swift`

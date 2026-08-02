@@ -23,6 +23,44 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         }
     }
 
+    private actor ErrorTransport: AIApprovalHTTPTransport {
+        private let error: Error
+        private var requestCount = 0
+
+        init(error: Error) {
+            self.error = error
+        }
+
+        func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+            requestCount += 1
+            throw error
+        }
+
+        func capturedRequestCount() -> Int {
+            requestCount
+        }
+    }
+
+    private actor ConcurrencyProbe {
+        private var activeCount = 0
+        private var maximumActiveCount = 0
+        private var completedCount = 0
+
+        func enter() {
+            activeCount += 1
+            maximumActiveCount = max(maximumActiveCount, activeCount)
+        }
+
+        func leave() {
+            activeCount -= 1
+            completedCount += 1
+        }
+
+        func snapshot() -> (maximum: Int, completed: Int) {
+            (maximumActiveCount, completedCount)
+        }
+    }
+
     func testChatCompletionsURLAppendsEndpoint() throws {
         XCTAssertEqual(
             try OpenAICompatibleApprovalClient.chatCompletionsURL(from: "https://example.com/v1/").absoluteString,
@@ -128,6 +166,130 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         XCTAssertEqual(requests.count, 2)
     }
 
+    func testInvalidDecisionPayloadFailsClosed() async throws {
+        let endpoint = URL(string: "https://example.com/v1/chat/completions")!
+        let invalidPayloads = [
+            "{\"decision\":\"maybe\",\"risk\":\"low\",\"reason\":\"Unknown\"}",
+            "{\"decision\":\"approve\",\"risk\":\"extreme\",\"reason\":\"Unknown\"}",
+            "{\"decision\":\"approve\",\"risk\":\"low\",\"reason\":\"   \"}"
+        ]
+
+        for content in invalidPayloads {
+            let responseData = try JSONSerialization.data(withJSONObject: [
+                "choices": [["message": ["content": content]]]
+            ])
+            let transport = StubTransport(responses: [
+                (responseData, HTTPURLResponse(url: endpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            ])
+            let client = OpenAICompatibleApprovalClient(transport: transport)
+
+            do {
+                _ = try await client.decide(configuration: configuration(), context: context())
+                XCTFail("Invalid model output must not produce an approval decision")
+            } catch {
+                XCTAssertEqual(error as? AIApprovalServiceError, .invalidResponse)
+            }
+        }
+    }
+
+    func testUnauthorizedResponseDoesNotRetryOrHideProviderMessage() async throws {
+        let endpoint = URL(string: "https://example.com/v1/chat/completions")!
+        let responseData = try JSONSerialization.data(withJSONObject: [
+            "error": ["message": "Authorization required"]
+        ])
+        let transport = StubTransport(responses: [
+            (responseData, HTTPURLResponse(url: endpoint, statusCode: 401, httpVersion: nil, headerFields: nil)!)
+        ])
+        let client = OpenAICompatibleApprovalClient(transport: transport)
+
+        do {
+            _ = try await client.decide(configuration: configuration(), context: context())
+            XCTFail("HTTP 401 must fail closed")
+        } catch {
+            XCTAssertEqual(
+                error as? AIApprovalServiceError,
+                .httpError(401, "Authorization required")
+            )
+        }
+        let requests = await transport.capturedRequests()
+        XCTAssertEqual(requests.count, 1)
+    }
+
+    func testTransportTimeoutMapsToStableApprovalErrorWithoutRetry() async throws {
+        let transport = ErrorTransport(error: URLError(.timedOut))
+        let client = OpenAICompatibleApprovalClient(transport: transport)
+
+        do {
+            _ = try await client.decide(configuration: configuration(), context: context())
+            XCTFail("A timed out request must fall back to manual approval")
+        } catch {
+            XCTAssertEqual(error as? AIApprovalServiceError, .timedOut)
+        }
+        let requestCount = await transport.capturedRequestCount()
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    func testConfigurationValidationRejectsMissingModelAndUnsafeEndpoints() async throws {
+        let client = OpenAICompatibleApprovalClient(transport: StubTransport(responses: []))
+        let invalidConfigurations = [
+            AIApprovalConfiguration(
+                isEnabledByUser: true,
+                manualRiskLevels: [],
+                baseURL: "not-a-url",
+                model: "test-model",
+                policy: "",
+                apiKey: nil
+            ),
+            AIApprovalConfiguration(
+                isEnabledByUser: true,
+                manualRiskLevels: [],
+                baseURL: "http://models.example.com/v1",
+                model: "test-model",
+                policy: "",
+                apiKey: nil
+            ),
+            AIApprovalConfiguration(
+                isEnabledByUser: true,
+                manualRiskLevels: [],
+                baseURL: "https://example.com/v1",
+                model: "   ",
+                policy: "",
+                apiKey: nil
+            )
+        ]
+        let expectedErrors: [AIApprovalServiceError] = [.invalidBaseURL, .insecureHTTPHost, .missingModel]
+
+        for (configuration, expectedError) in zip(invalidConfigurations, expectedErrors) {
+            do {
+                _ = try await client.decide(configuration: configuration, context: context())
+                XCTFail("Invalid configuration must fail before sending a request")
+            } catch {
+                XCTAssertEqual(error as? AIApprovalServiceError, expectedError)
+            }
+        }
+    }
+
+    func testConcurrencyLimiterCapsParallelEvaluationsAndDrainsQueue() async {
+        let limiter = AIApprovalConcurrencyLimiter(limit: 4)
+        let probe = ConcurrencyProbe()
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<20 {
+                group.addTask {
+                    await limiter.run {
+                        await probe.enter()
+                        try? await Task.sleep(for: .milliseconds(20))
+                        await probe.leave()
+                    }
+                }
+            }
+        }
+
+        let snapshot = await probe.snapshot()
+        XCTAssertEqual(snapshot.maximum, 4)
+        XCTAssertEqual(snapshot.completed, 20)
+    }
+
     func testExecutionPolicyUsesManualRiskSelection() {
         let lowApprove = AIApprovalDecision(decision: .approve, risk: .low, reason: "ok")
         let highApprove = AIApprovalDecision(decision: .approve, risk: .high, reason: "risky")
@@ -145,6 +307,37 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         XCTAssertTrue(AIApprovalExecutionPolicy.shouldExecute(
             isEnabled: true, manualRiskLevels: [.medium, .high], decision: lowDeny
         ))
+    }
+
+    func testExecutionPolicyCoversEveryRiskDecisionAndManualSelection() {
+        let risks = AIApprovalRisk.allCases
+        let selections: [Set<AIApprovalRisk>] = [
+            [],
+            [.low], [.medium], [.high],
+            [.low, .medium], [.low, .high], [.medium, .high],
+            Set(risks)
+        ]
+
+        for selection in selections {
+            for risk in risks {
+                for choice in [AIApprovalDecisionChoice.approve, .deny] {
+                    let decision = AIApprovalDecision(
+                        decision: choice,
+                        risk: risk,
+                        reason: "matrix"
+                    )
+                    XCTAssertEqual(
+                        AIApprovalExecutionPolicy.shouldExecute(
+                            isEnabled: true,
+                            manualRiskLevels: selection,
+                            decision: decision
+                        ),
+                        !selection.contains(risk),
+                        "choice=\(choice.rawValue) risk=\(risk.rawValue) selection=\(selection)"
+                    )
+                }
+            }
+        }
     }
 
     func testPresentationPolicyKeepsEvaluationSilentUnlessHintIsEnabled() {

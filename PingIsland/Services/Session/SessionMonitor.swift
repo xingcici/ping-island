@@ -12,6 +12,13 @@ import Foundation
 
 @MainActor
 class SessionMonitor: ObservableObject {
+    typealias AIApprovalResponseHandler = @MainActor (
+        _ ingress: SessionIngress,
+        _ toolUseID: String,
+        _ decision: AIApprovalDecisionChoice,
+        _ reason: String?
+    ) -> Void
+
     @Published var instances: [SessionState] = []
     @Published var pendingInstances: [SessionState] = []
     @Published private(set) var claudeUsageSnapshot: ClaudeUsageSnapshot?
@@ -34,6 +41,7 @@ class SessionMonitor: ObservableObject {
     private var telemetryPendingAttentionSessionIDs: Set<String> = []
     private let aiApprovalService: AIApprovalDecisionService
     private let aiApprovalSettings: AppSettingsStore
+    private let aiApprovalResponseHandler: AIApprovalResponseHandler
     private var aiApprovalRequestStates = AIApprovalRequestStateStore()
     private var aiApprovalTasks: [AIApprovalRequestKey: Task<Void, Never>] = [:]
     private var aiApprovalAuditRecordIDs: [AIApprovalRequestKey: UUID] = [:]
@@ -42,11 +50,27 @@ class SessionMonitor: ObservableObject {
         runtimeCoordinator: any RuntimeCoordinating = RuntimeCoordinator.shared,
         aiApprovalService: AIApprovalDecisionService? = nil,
         aiApprovalSettings: AppSettingsStore = AppSettingsStore.shared,
+        aiApprovalResponseHandler: @escaping AIApprovalResponseHandler = { ingress, toolUseID, decision, reason in
+            if ingress == .remoteBridge {
+                RemoteConnectorManager.shared.respondToPermission(
+                    toolUseId: toolUseID,
+                    decision: decision.rawValue,
+                    reason: decision == .deny ? reason : nil
+                )
+            } else {
+                HookSocketServer.shared.respondToPermission(
+                    toolUseId: toolUseID,
+                    decision: decision.rawValue,
+                    reason: decision == .deny ? reason : nil
+                )
+            }
+        },
         observeSharedState: Bool = true
     ) {
         self.runtimeCoordinator = runtimeCoordinator
         self.aiApprovalService = aiApprovalService ?? .shared
         self.aiApprovalSettings = aiApprovalSettings
+        self.aiApprovalResponseHandler = aiApprovalResponseHandler
         self.shouldRefreshUsage = !Self.isRunningUnderXCTest
         guard observeSharedState else { return }
         if shouldRefreshUsage {
@@ -669,7 +693,20 @@ class SessionMonitor: ObservableObject {
                         toolUseID: toolUseID
                     )
                 } catch {
-                    guard !Task.isCancelled else { return }
+                    if Task.isCancelled {
+                        _ = aiApprovalService.record(
+                            configuration: configuration,
+                            context: context,
+                            evaluation: nil,
+                            outcome: .superseded
+                        )
+                        AIApprovalRuntimeLog.record(
+                            "evaluation_cancelled_superseded",
+                            sessionID: context.sessionID,
+                            toolUseID: toolUseID
+                        )
+                        return
+                    }
                     let isPending = await isPendingAIApproval(
                         sessionID: context.sessionID,
                         toolUseID: toolUseID
@@ -728,26 +765,30 @@ class SessionMonitor: ObservableObject {
             return
         }
 
+        guard await isPendingAIApproval(
+            sessionID: context.sessionID,
+            toolUseID: toolUseID
+        ) else {
+            AIApprovalRuntimeLog.record(
+                "result_superseded",
+                sessionID: context.sessionID,
+                toolUseID: toolUseID,
+                details: "reason=request_no_longer_pending"
+            )
+            _ = aiApprovalService.record(
+                configuration: configuration,
+                context: context,
+                evaluation: evaluation,
+                outcome: .superseded
+            )
+            return
+        }
+
         guard AIApprovalExecutionPolicy.shouldExecute(
             isEnabled: aiApprovalSettings.aiApprovalEnabled,
             manualRiskLevels: aiApprovalSettings.aiApprovalManualRiskLevels,
             decision: evaluation.decision
         ) else {
-            guard await isPendingAIApproval(sessionID: context.sessionID, toolUseID: toolUseID) else {
-                AIApprovalRuntimeLog.record(
-                    "manual_result_superseded",
-                    sessionID: context.sessionID,
-                    toolUseID: toolUseID,
-                    details: "risk=\(evaluation.decision.risk.rawValue)"
-                )
-                _ = aiApprovalService.record(
-                    configuration: configuration,
-                    context: context,
-                    evaluation: evaluation,
-                    outcome: .superseded
-                )
-                return
-            }
             let recordID = aiApprovalService.record(
                 configuration: configuration,
                 context: context,
@@ -850,19 +891,21 @@ class SessionMonitor: ObservableObject {
             details: "remainsPending=\(remainsPending) phase=\(updatedSession?.phase.description ?? "missing")"
         )
 
-        if ingress == .remoteBridge {
-            RemoteConnectorManager.shared.respondToPermission(
-                toolUseId: toolUseID,
-                decision: decision.decision == .approve ? "approve" : "deny",
-                reason: decision.decision == .deny ? decision.reason : nil
+        guard wasPending else {
+            AIApprovalRuntimeLog.record(
+                "hook_response_suppressed",
+                sessionID: sessionID,
+                toolUseID: toolUseID,
+                details: "reason=request_no_longer_pending"
             )
-        } else {
-            HookSocketServer.shared.respondToPermission(
-                toolUseId: toolUseID,
-                decision: decision.decision == .approve ? "approve" : "deny",
-                reason: decision.decision == .deny ? decision.reason : nil
-            )
+            return
         }
+        aiApprovalResponseHandler(
+            ingress,
+            toolUseID,
+            decision.decision,
+            decision.decision == .deny ? decision.reason : nil
+        )
         AIApprovalRuntimeLog.record(
             "hook_response_sent",
             sessionID: sessionID,
