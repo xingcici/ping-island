@@ -234,7 +234,7 @@ final class ClaudeApprovalStateTests: XCTestCase {
             into: &staleSession
         )
 
-        let statuses = Dictionary(uniqueKeysWithValues: staleSession.chatItems.compactMap { item in
+        let statuses: [String: ToolStatus] = Dictionary(uniqueKeysWithValues: staleSession.chatItems.compactMap { item in
             guard case .toolCall(let tool) = item.type else { return nil }
             return (item.id, tool.status)
         })
