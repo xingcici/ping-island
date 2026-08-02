@@ -2,6 +2,8 @@
 
 Ping Island 可以把响应式 Hook 审批交给用户配置的 OpenAI 兼容模型判断。此功能默认关闭，不改变 Hook 安装内容，也不处理 AskUserQuestion、通知型事件、Codex App Server 或 Native Runtime 审批。
 
+Codex 的 rollout/app-server 会同时刷新会话历史。刷新时，本地仍在等待响应的 Hook 审批工具会合并回快照历史，避免高并发下较旧的 `running` 状态或暂时缺失的工具记录覆盖审批队列。
+
 ## 配置
 
 在“设置 → 智能审批”中填写 Base URL 和模型名。API Key 会保存在 macOS Keychain；不需要鉴权的本机服务可以留空。HTTPS 可连接任意地址，明文 HTTP 仅允许 `localhost`、`127.0.0.1` 和 `::1`。

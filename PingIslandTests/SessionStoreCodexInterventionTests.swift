@@ -770,6 +770,102 @@ final class SessionStoreCodexInterventionTests: XCTestCase {
         await store.process(.sessionArchived(sessionId: sessionId))
     }
 
+    func testConcurrentCodexHookPermissionsSurviveSnapshotHistoryRefresh() async {
+        let sessionId = "codex-hook-snapshot-burst-\(UUID().uuidString)"
+        let store = SessionStore.shared
+        let toolUseIds = (0..<5).map { "call-concurrent-\($0)" }
+        let clientInfo = SessionClientInfo.codexApp(threadId: sessionId)
+        let events = toolUseIds.enumerated().map { index, toolUseId in
+            HookEvent(
+                sessionId: sessionId,
+                cwd: "/tmp/project",
+                event: "PermissionRequest",
+                status: "waiting_for_approval",
+                provider: .codex,
+                clientInfo: clientInfo,
+                pid: nil,
+                tty: nil,
+                tool: "Bash",
+                toolInput: [
+                    "command": AnyCodable("git -C /tmp/concurrent-\(index) reset --hard"),
+                    "description": AnyCodable("Concurrent approval \(index)")
+                ],
+                toolUseId: toolUseId,
+                notificationType: nil,
+                message: nil
+            )
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            for event in events {
+                group.addTask {
+                    await store.process(.hookReceived(event))
+                }
+            }
+        }
+
+        let startedAt = Date()
+        let snapshotHistory = toolUseIds.prefix(3).map { toolUseId in
+            ChatHistoryItem(
+                id: toolUseId,
+                type: .toolCall(ToolCallItem(
+                    name: "Bash",
+                    input: ["command": "git reset --hard"],
+                    status: .running,
+                    result: nil,
+                    structuredResult: nil,
+                    subagentTools: []
+                )),
+                timestamp: startedAt
+            )
+        }
+        await store.syncCodexThreadSnapshot(
+            CodexThreadSnapshot(
+                threadId: sessionId,
+                name: "Codex",
+                preview: "Running concurrent commands",
+                cwd: "/tmp/project",
+                clientInfo: clientInfo,
+                intervention: nil,
+                createdAt: startedAt,
+                updatedAt: startedAt.addingTimeInterval(5),
+                phase: .processing,
+                historyItems: snapshotHistory,
+                conversationInfo: ConversationInfo(
+                    summary: "Codex",
+                    lastMessage: nil,
+                    lastMessageRole: nil,
+                    lastToolName: "Bash",
+                    firstUserMessage: "test concurrent approvals",
+                    lastUserMessageDate: startedAt
+                ),
+                latestTurnId: "turn-concurrent",
+                latestResponseText: nil,
+                latestResponsePhase: nil,
+                latestUserText: "test concurrent approvals"
+            )
+        )
+
+        var session = await store.session(for: sessionId)
+        let pendingToolUseIds = Set(session?.chatItems.compactMap { item -> String? in
+            guard case .toolCall(let tool) = item.type,
+                  tool.status == .waitingForApproval else {
+                return nil
+            }
+            return item.id
+        } ?? [])
+        XCTAssertEqual(pendingToolUseIds, Set(toolUseIds))
+        XCTAssertTrue(session?.phase.isWaitingForApproval == true)
+
+        for toolUseId in toolUseIds {
+            await store.process(.permissionApproved(sessionId: sessionId, toolUseId: toolUseId))
+        }
+
+        session = await store.session(for: sessionId)
+        XCTAssertFalse(session?.needsApprovalResponse ?? true)
+        await store.process(.sessionArchived(sessionId: sessionId))
+    }
+
     func testCodexHookPermissionInterventionRestoresApprovalPhaseDuringAppServerRefresh() async {
         let sessionId = "codex-hook-degraded-\(UUID().uuidString)"
         let store = SessionStore.shared

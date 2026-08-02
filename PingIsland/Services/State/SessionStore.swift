@@ -3813,7 +3813,17 @@ actor SessionStore {
         } else if let preview = snapshot.preview, !preview.isEmpty {
             session.previewText = preview
         }
+        let sessionBeforeSnapshotHistoryMerge = session
         session.chatItems = snapshot.historyItems
+        let preservedPendingApprovalCount = Self.mergeConcurrentPendingApprovalTools(
+            from: sessionBeforeSnapshotHistoryMerge,
+            into: &session
+        )
+        if preservedPendingApprovalCount > 0 {
+            Self.logger.info(
+                "Codex snapshot preserved Hook approval queue session=\(resolvedSessionId.prefix(8), privacy: .public) preservedCount=\(preservedPendingApprovalCount, privacy: .public) snapshotItems=\(snapshot.historyItems.count, privacy: .public)"
+            )
+        }
         session.conversationInfo = snapshot.conversationInfo
         session.codexParentThreadId = snapshot.parentThreadId
         session.codexSubagentDepth = snapshot.subagentDepth
