@@ -162,6 +162,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
     var onRedockRequested: (() -> Void)?
     private let interactionModel = DetachedIslandInteractionModel()
     private let bubbleViewState = DetachedIslandBubbleViewState()
+    private var automaticAttentionTracker = SessionAutomaticAttentionTracker()
     private var manualAttentionTracker = SessionManualAttentionTracker()
     private let detachedViewController: DetachedIslandViewController
     private var lastAppliedLayout: DetachedIslandWindowLayout
@@ -340,6 +341,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
             activatesApplication: activatesApplication
         )
         if presentsAutomaticContent {
+            primeExistingAttentionTracking()
             presentExistingAttentionIfNeeded()
             presentFloatingSettingsHintIfNeeded()
         } else {
@@ -379,6 +381,7 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
             activatesApplication: activatesApplication
         )
         if presentsAutomaticContent {
+            primeExistingAttentionTracking()
             presentExistingAttentionIfNeeded()
             presentFloatingSettingsHintIfNeeded()
         } else {
@@ -400,6 +403,9 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
     }
 
     private func primeExistingAttentionTracking() {
+        _ = automaticAttentionTracker.consumeNewAttentionSession(
+            from: sessionMonitor.pendingInstances
+        )
         _ = manualAttentionTracker.consumeNewAttentionSession(
             from: sessionMonitor.sessionsEligibleForManualAttention(from: sessionMonitor.instances)
         )
@@ -645,6 +651,14 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
                 self?.reconcileHighlightedSessionState()
                 self?.reconcileBubbleStateWithAvailableContent()
                 self?.scheduleWindowSizeUpdate()
+            }
+            .store(in: &cancellables)
+
+        sessionMonitor.$pendingInstances
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] instances in
+                self?.handleAutomaticAttentionChange(instances)
             }
             .store(in: &cancellables)
 
@@ -1378,6 +1392,27 @@ final class DetachedIslandWindowController: NSWindowController, NSWindowDelegate
         applyBubbleStateChange {
             interactionModel.presentHoverPreview(canPresentBubble: true)
         }
+    }
+
+    private func handleAutomaticAttentionChange(_ instances: [SessionState]) {
+        guard let targetSession = automaticAttentionTracker.consumeNewAttentionSession(
+            from: instances
+        ) else {
+            return
+        }
+        guard interactionModel.bubbleState != .pinned else { return }
+
+        if sessionMonitor.shouldPresentAIApprovalEvaluatingHint(for: targetSession),
+           let toolUseID = SessionMonitor.approvalToolUseId(for: targetSession) {
+            AIApprovalRuntimeLog.record(
+                "evaluating_hint_presented",
+                sessionID: targetSession.sessionId,
+                toolUseID: toolUseID,
+                details: "surface=floating"
+            )
+        }
+
+        presentExistingAttentionIfNeeded()
     }
 
     private func handleManualAttentionChange() {

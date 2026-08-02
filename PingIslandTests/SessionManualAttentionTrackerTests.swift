@@ -2,6 +2,31 @@ import XCTest
 @testable import Ping_Island
 
 final class SessionManualAttentionTrackerTests: XCTestCase {
+    func testAutomaticAttentionTrackerPresentsEachToolRequestOnce() {
+        var tracker = SessionAutomaticAttentionTracker()
+        let firstApproval = makeApprovalSession(toolUseId: "tool-1")
+        let secondApproval = makeApprovalSession(toolUseId: "tool-2")
+
+        XCTAssertEqual(
+            tracker.consumeNewAttentionSession(from: [firstApproval])?.activePermission?.toolUseId,
+            "tool-1"
+        )
+        XCTAssertNil(tracker.consumeNewAttentionSession(from: [firstApproval]))
+        XCTAssertEqual(
+            tracker.consumeNewAttentionSession(from: [secondApproval])?.activePermission?.toolUseId,
+            "tool-2"
+        )
+    }
+
+    func testAutomaticAttentionTrackerAllowsRequestAfterPendingListClears() {
+        var tracker = SessionAutomaticAttentionTracker()
+        let approval = makeApprovalSession(toolUseId: "tool-1")
+
+        XCTAssertNotNil(tracker.consumeNewAttentionSession(from: [approval]))
+        XCTAssertNil(tracker.consumeNewAttentionSession(from: []))
+        XCTAssertNotNil(tracker.consumeNewAttentionSession(from: [approval]))
+    }
+
     func testTerminalRoutedPromptTriggersAttentionNotification() {
         var tracker = SessionManualAttentionTracker()
         let session = SessionState(

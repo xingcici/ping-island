@@ -1,4 +1,28 @@
 import Foundation
+
+struct SessionAutomaticAttentionTracker {
+    private var previousRequestKeys = Set<String>()
+
+    mutating func consumeNewAttentionSession(from instances: [SessionState]) -> SessionState? {
+        let currentRequestKeys = Set(instances.compactMap { requestKey(for: $0) })
+        let newRequestKeys = currentRequestKeys.subtracting(previousRequestKeys)
+        previousRequestKeys = currentRequestKeys
+
+        return instances.first { session in
+            guard let key = requestKey(for: session) else { return false }
+            return newRequestKeys.contains(key)
+        }
+    }
+
+    private func requestKey(for session: SessionState) -> String? {
+        guard session.needsAttention else { return nil }
+        let requestID = session.activePermission?.toolUseId
+            ?? session.intervention?.id
+            ?? session.phase.description
+        return "\(session.stableId)|\(requestID)"
+    }
+}
+
 struct SessionManualAttentionTracker {
     static let autoApproveApprovalNotificationDelay: TimeInterval = 1.25
 
