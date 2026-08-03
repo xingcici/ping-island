@@ -31,6 +31,7 @@ concurrency:
 jobs:
   linux-bridge:
     name: Build Linux remote bridge
+    if: ${{ github.event_name != 'push' || !endsWith(github.ref_name, '-x') }}
     runs-on: ${{ matrix.runner }}
     container: swift:6.1.3-jammy
     timeout-minutes: 30
@@ -99,7 +100,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-      RELEASE_DRAFT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.draft) || 'false' }}
+      RELEASE_DRAFT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.draft) || 'true' }}
       RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || 'false' }}
 
     steps:
@@ -341,11 +342,11 @@ jobs:
 
           version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app_path/Contents/Info.plist")
           build=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$app_path/Contents/Info.plist")
-          expected_tag="v$version-x"
+          expected_tag="v$version"
           notes_path="releases/notes/$version.md"
 
           if [ "$RELEASE_TAG" != "$expected_tag" ]; then
-            echo "::error::Release tag $RELEASE_TAG does not match fork release version $expected_tag"
+            echo "::error::Release tag $RELEASE_TAG does not match app version $version"
             exit 1
           fi
 

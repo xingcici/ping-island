@@ -1,0 +1,95 @@
+name: Fork Release Packages
+
+on:
+  push:
+    tags:
+      - "v*-x"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build fork release packages
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      PING_ISLAND_RELEASE_VERSION_SUFFIX: -x
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate fork release version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app_version="${RELEASE_TAG#v}"
+          app_version="${app_version%-x}"
+          expected_version=$(sed -n 's/^[[:space:]]*MARKETING_VERSION = \([^;]*\);/\1/p' PingIsland.xcodeproj/project.pbxproj | sort -u)
+
+          if [ "$app_version" != "$expected_version" ]; then
+            echo "::error::Fork release tag $RELEASE_TAG does not match app version $expected_version"
+            exit 1
+          fi
+
+          if [ ! -f "releases/notes/$app_version.md" ]; then
+            echo "::error::Missing release notes: releases/notes/$app_version.md"
+            exit 1
+          fi
+
+          echo "APP_VERSION=$app_version" >> "$GITHUB_ENV"
+
+      - name: Build ad-hoc signed DMG and ZIP
+        run: ./scripts/package-unsigned.sh
+
+      - name: Upload fork package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PingIsland-${{ github.ref_name }}-packages
+          path: releases/unsigned/*
+          if-no-files-found: error
+
+      - name: Publish fork GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          assets=(releases/unsigned/*.dmg releases/unsigned/*.zip)
+          if [ "${#assets[@]}" -ne 2 ]; then
+            echo "::error::Expected one DMG and one ZIP, found ${#assets[@]} assets"
+            exit 1
+          fi
+
+          notes_file="$RUNNER_TEMP/fork-release-notes.md"
+          cp "releases/notes/$APP_VERSION.md" "$notes_file"
+          printf '\n\n> Fork build: ad-hoc signed and not notarized. On first launch, macOS may require right-clicking the app and choosing Open.\n' >> "$notes_file"
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Ping Island $RELEASE_TAG" \
+              --notes-file "$notes_file" \
+              --draft=false \
+              --prerelease=false
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "Ping Island $RELEASE_TAG" \
+              --notes-file "$notes_file" \
+              --latest
+          fi
+
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"

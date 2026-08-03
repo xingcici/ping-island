@@ -4,6 +4,8 @@
 
 The repo ships `.github/workflows/release-packages.yml` for GitHub-hosted release packaging.
 
+Fork tags ending in `-x` use `.github/workflows/fork-release-packages.yml`. That lane keeps the app bundle version Apple-compatible, adds `-x` to the tag and package filenames, and publishes ad-hoc signed, non-notarized DMG/ZIP assets without requiring upstream Developer ID secrets. It does not publish a Sparkle appcast.
+
 - It runs on `macos-15`.
 - It imports your `Developer ID Application` certificate into a temporary keychain.
 - It archives and exports the app through `./scripts/package-release.sh`.

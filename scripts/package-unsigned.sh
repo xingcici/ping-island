@@ -19,6 +19,12 @@ SCHEME="PingIsland"
 PROJECT_FILE="$PROJECT_DIR/PingIsland.xcodeproj"
 APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/$APP_BUNDLE_NAME"
 BUILD_MODE_LABEL="release"
+VERSION_SUFFIX="${PING_ISLAND_RELEASE_VERSION_SUFFIX:-}"
+
+if [[ ! "$VERSION_SUFFIX" =~ ^(-[A-Za-z0-9][A-Za-z0-9.-]*)?$ ]]; then
+    echo "ERROR: PING_ISLAND_RELEASE_VERSION_SUFFIX must be empty or start with a hyphen followed by letters, numbers, dots, or hyphens."
+    exit 1
+fi
 
 echo "=== Packaging Unsigned Ping Island ==="
 echo ""
@@ -114,9 +120,10 @@ codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PATH/Contents/Info.plist")
 BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PATH/Contents/Info.plist")
+RELEASE_VERSION="$VERSION$VERSION_SUFFIX"
 
-ZIP_PATH="$RELEASE_DIR/$APP_PRODUCT_NAME-$VERSION-$BUILD_MODE_LABEL-unsigned.zip"
-DMG_PATH="$RELEASE_DIR/$APP_PRODUCT_NAME-$VERSION-$BUILD_MODE_LABEL-unsigned.dmg"
+ZIP_PATH="$RELEASE_DIR/$APP_PRODUCT_NAME-$RELEASE_VERSION-$BUILD_MODE_LABEL-unsigned.zip"
+DMG_PATH="$RELEASE_DIR/$APP_PRODUCT_NAME-$RELEASE_VERSION-$BUILD_MODE_LABEL-unsigned.dmg"
 
 rm -f "$ZIP_PATH" "$DMG_PATH"
 rm -rf "$STAGING_DIR"
@@ -130,7 +137,7 @@ create_styled_dmg "$APP_PATH" "$DMG_PATH" "Ping Island" "$STAGING_DIR" "$PROJECT
 
 echo ""
 echo "=== Unsigned Package Ready ==="
-echo "Version: $VERSION ($BUILD)"
+echo "Version: $RELEASE_VERSION ($BUILD; app version $VERSION)"
 echo "Build mode: $BUILD_MODE_LABEL"
 echo "App: $APP_PATH"
 echo "ZIP: $ZIP_PATH"
