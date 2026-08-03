@@ -115,6 +115,13 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let responseFormat = try XCTUnwrap(json["response_format"] as? [String: Any])
         XCTAssertEqual(responseFormat["type"] as? String, "json_schema")
+        let messages = try XCTUnwrap(json["messages"] as? [[String: Any]])
+        let userMessage = try XCTUnwrap(messages.last?["content"] as? String)
+        let modelContext = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(userMessage.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(modelContext["context_strategy"] as? String, "summary_recent_window")
+        XCTAssertEqual(modelContext["latest_user_instruction"] as? String, "Inspect the README")
     }
 
     func testUnsupportedSchemaFallsBackWithoutResponseFormat() async throws {
@@ -531,7 +538,15 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
                 toolInput: nil,
                 receivedAt: Date()
             )),
-            chatItems: history
+            chatItems: history,
+            conversationInfo: ConversationInfo(
+                summary: "Implement the approval feature",
+                lastMessage: "assistant 7",
+                lastMessageRole: "assistant",
+                lastToolName: nil,
+                firstUserMessage: "user 0",
+                lastUserMessageDate: Date()
+            )
         )
         let event = HookEvent(
             sessionId: "session-1",
@@ -558,6 +573,105 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         XCTAssertFalse(context.recentConversation.contains { $0.content.contains("private thought") })
         XCTAssertEqual(context.toolInput["api_token"]?.value as? String, "must-not-leak")
         XCTAssertEqual(context.toolInput["command"]?.value as? String, "make test")
+        XCTAssertEqual(context.conversationSummary, "Implement the approval feature")
+    }
+
+    func testContextBudgeterUsesSummaryRecentWindowAndHardPayloadLimit() throws {
+        let entries = (0..<120).map { index in
+            AIApprovalRequestContext.ConversationEntry(
+                role: index.isMultiple(of: 2) ? "user" : "assistant",
+                content: "message-\(index)-" + String(repeating: "上下文🙂\u{0000}", count: 180)
+            )
+        } + [
+            .init(
+                role: "user",
+                content: "LATEST-USER-INSTRUCTION " + String(repeating: "最后指令🙂", count: 3_000) + " END-LATEST"
+            ),
+            .init(role: "assistant", content: "latest assistant response")
+        ]
+        let largeToolInput = String(repeating: "diff-line-修改🙂\n", count: 8_000)
+        let context = AIApprovalRequestContext(
+            sessionID: "session-large",
+            toolUseID: "tool-large",
+            ingress: .hookBridge,
+            provider: "claude",
+            client: "Claude Code",
+            cwd: "/workspace/project",
+            toolName: "Bash",
+            interventionTitle: "Approve a large patch",
+            interventionMessage: "Apply the requested patch",
+            toolInput: [
+                "command": AnyCodable("apply-patch"),
+                "diff": AnyCodable(largeToolInput)
+            ],
+            conversationSummary: String(repeating: "长期会话摘要🙂", count: 2_000),
+            recentConversation: entries
+        )
+
+        let prepared = AIApprovalContextBudgeter.prepare(context: context)
+
+        XCTAssertLessThanOrEqual(prepared.byteCount, AIApprovalContextBudgeter.maximumPayloadBytes)
+        XCTAssertTrue(prepared.wasTruncated)
+        XCTAssertGreaterThan(prepared.omittedConversationEntries, 0)
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(prepared.json.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(payload["context_strategy"] as? String, "summary_recent_window")
+        XCTAssertTrue((payload["session_summary"] as? String)?.contains("truncated") == true)
+        let latestUserInstruction = try XCTUnwrap(payload["latest_user_instruction"] as? String)
+        XCTAssertTrue(latestUserInstruction.hasPrefix("LATEST-USER-INSTRUCTION"))
+        XCTAssertTrue(latestUserInstruction.hasSuffix("END-LATEST"))
+        let recentConversation = try XCTUnwrap(payload["recent_conversation"] as? [[String: Any]])
+        XCTAssertEqual(recentConversation.last?["content"] as? String, "latest assistant response")
+        let toolInput = try XCTUnwrap(payload["tool_input"] as? [String: Any])
+        let originalToolInputData = try JSONSerialization.data(
+            withJSONObject: ["command": "apply-patch", "diff": largeToolInput],
+            options: [.sortedKeys]
+        )
+        XCTAssertEqual(toolInput["_ping_island_truncated"] as? Bool, true)
+        XCTAssertEqual(toolInput["original_utf8_bytes"] as? Int, originalToolInputData.count)
+        XCTAssertEqual((toolInput["sha256"] as? String)?.count, 64)
+        let priorityFields = try XCTUnwrap(toolInput["priority_fields"] as? [String: Any])
+        XCTAssertEqual(priorityFields["command"] as? String, "apply-patch")
+        let budget = try XCTUnwrap(payload["context_budget"] as? [String: Any])
+        XCTAssertEqual(budget["context_truncated"] as? Bool, true)
+
+        XCTAssertEqual(context.recentConversation.count, 122)
+        XCTAssertEqual(context.toolInput["diff"]?.value as? String, largeToolInput)
+    }
+
+    func testContextBudgeterKeepsSmallContextComplete() throws {
+        let context = AIApprovalRequestContext(
+            sessionID: "session-small",
+            toolUseID: "tool-small",
+            ingress: .hookBridge,
+            provider: "codex",
+            client: "Codex",
+            cwd: "/workspace/project",
+            toolName: "Read",
+            interventionTitle: "Approve read",
+            interventionMessage: "Read README.md",
+            toolInput: ["path": AnyCodable("README.md")],
+            conversationSummary: "Inspect documentation",
+            recentConversation: [
+                .init(role: "user", content: "Inspect the README"),
+                .init(role: "assistant", content: "I will read it")
+            ]
+        )
+
+        let prepared = AIApprovalContextBudgeter.prepare(context: context)
+
+        XCTAssertFalse(prepared.wasTruncated)
+        XCTAssertEqual(prepared.omittedConversationEntries, 0)
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(prepared.json.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(payload["session_summary"] as? String, "Inspect documentation")
+        XCTAssertEqual(payload["latest_user_instruction"] as? String, "Inspect the README")
+        let recentConversation = try XCTUnwrap(payload["recent_conversation"] as? [[String: Any]])
+        XCTAssertEqual(recentConversation.count, 2)
+        let toolInput = try XCTUnwrap(payload["tool_input"] as? [String: Any])
+        XCTAssertEqual(toolInput["path"] as? String, "README.md")
     }
 
     @MainActor
@@ -581,6 +695,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         let exportedContext = try XCTUnwrap(exported.first?["context"] as? [String: Any])
         let exportedToolInput = try XCTUnwrap(exportedContext["toolInput"] as? [String: Any])
         XCTAssertEqual(exportedToolInput["api_token"] as? String, "complete-value")
+        XCTAssertEqual(exportedContext["conversationSummary"] as? String, "Complete summary")
 
         let excessRecords = (0...AIApprovalAuditStore.maximumRecordCount).map { offset in
             auditRecord(createdAt: now.addingTimeInterval(-TimeInterval(offset)))
@@ -592,6 +707,45 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         cappedStore.clear()
         XCTAssertTrue(cappedStore.records.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+    }
+
+    @MainActor
+    func testModelContextBudgetingDoesNotAlterFullAuditRecord() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ai-approval-full-audit-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let auditStore = AIApprovalAuditStore(fileURL: directory.appendingPathComponent("audit.json"))
+        let service = AIApprovalDecisionService(auditStore: auditStore)
+        let fullToolValue = String(repeating: "complete-tool-input🙂", count: 5_000)
+        let fullConversationValue = String(repeating: "complete-conversation🙂", count: 5_000)
+        let context = AIApprovalRequestContext(
+            sessionID: "session-full-audit",
+            toolUseID: "tool-full-audit",
+            ingress: .hookBridge,
+            provider: "claude",
+            client: "Claude Code",
+            cwd: "/workspace/project",
+            toolName: "Bash",
+            interventionTitle: "Approve command",
+            interventionMessage: "Run the complete command",
+            toolInput: ["command": AnyCodable(fullToolValue)],
+            conversationSummary: "Complete provider summary",
+            recentConversation: [.init(role: "user", content: fullConversationValue)]
+        )
+
+        let prepared = AIApprovalContextBudgeter.prepare(context: context)
+        XCTAssertTrue(prepared.wasTruncated)
+        _ = service.record(
+            configuration: configuration(),
+            context: context,
+            evaluation: nil,
+            outcome: .manualReview
+        )
+
+        let storedContext = try XCTUnwrap(auditStore.records.first?.context)
+        XCTAssertEqual(storedContext.toolInput["command"]?.value as? String, fullToolValue)
+        XCTAssertEqual(storedContext.conversationSummary, "Complete provider summary")
+        XCTAssertEqual(storedContext.conversation.first?.content, fullConversationValue)
     }
 
     func testAuditSummaryPreservesTokenLikeHookValues() {
@@ -688,6 +842,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
                 interventionTitle: "Approve read",
                 interventionMessage: "Read a project file",
                 toolInput: ["api_token": AnyCodable("complete-value")],
+                conversationSummary: "Complete summary",
                 conversation: [.init(role: "user", content: "Inspect the README")]
             )
         )
