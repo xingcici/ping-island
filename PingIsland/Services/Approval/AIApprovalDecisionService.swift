@@ -776,10 +776,12 @@ actor OpenAICompatibleApprovalClient {
         let model: String
         let messages: [Message]
         let responseFormat: ResponseFormat?
+        let enableThinking: Bool?
 
         enum CodingKeys: String, CodingKey {
             case model, messages
             case responseFormat = "response_format"
+            case enableThinking = "enable_thinking"
         }
     }
 
@@ -903,7 +905,8 @@ actor OpenAICompatibleApprovalClient {
                 .init(role: "system", content: Self.systemPrompt(policy: configuration.policy)),
                 .init(role: "user", content: preparedContext.json)
             ],
-            responseFormat: includeSchema ? Self.responseFormat : nil
+            responseFormat: includeSchema ? Self.responseFormat : nil,
+            enableThinking: Self.shouldDisableThinking(for: configuration.model) ? false : nil
         )
         request.httpBody = try JSONEncoder().encode(body)
 
@@ -951,6 +954,11 @@ actor OpenAICompatibleApprovalClient {
             risk: decision.risk,
             reason: decision.reason.trimmingCharacters(in: .whitespacesAndNewlines)
         )
+    }
+
+    private nonisolated static func shouldDisableThinking(for model: String) -> Bool {
+        let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalizedModel == "qwen3.7-flash" || normalizedModel.hasPrefix("qwen3.7-flash-")
     }
 
     private static func isRetryableStatus(_ status: Int) -> Bool {

@@ -115,6 +115,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let responseFormat = try XCTUnwrap(json["response_format"] as? [String: Any])
         XCTAssertEqual(responseFormat["type"] as? String, "json_schema")
+        XCTAssertNil(json["enable_thinking"])
         let messages = try XCTUnwrap(json["messages"] as? [[String: Any]])
         let userMessage = try XCTUnwrap(messages.last?["content"] as? String)
         let modelContext = try XCTUnwrap(
@@ -122,6 +123,33 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         )
         XCTAssertEqual(modelContext["context_strategy"] as? String, "summary_recent_window")
         XCTAssertEqual(modelContext["latest_user_instruction"] as? String, "Inspect the README")
+    }
+
+    func testQwen37FlashDisablesThinkingInRequestBody() async throws {
+        let endpoint = URL(string: "https://example.com/v1/chat/completions")!
+        let responseData = try JSONSerialization.data(withJSONObject: [
+            "choices": [[
+                "message": [
+                    "content": "{\"decision\":\"approve\",\"risk\":\"low\",\"reason\":\"Read-only inspection\"}"
+                ]
+            ]]
+        ])
+        let transport = StubTransport(responses: [
+            (responseData, HTTPURLResponse(url: endpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        ])
+        let client = OpenAICompatibleApprovalClient(transport: transport)
+
+        _ = try await client.decide(
+            configuration: configuration(model: " qwen3.7-flash-2026-08-01 "),
+            context: context()
+        )
+
+        let capturedRequests = await transport.capturedRequests()
+        let request = try XCTUnwrap(capturedRequests.first)
+        let body = try XCTUnwrap(request.httpBody)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(json["enable_thinking"] as? Bool, false)
+        XCTAssertNotNil(json["response_format"])
     }
 
     func testUnsupportedSchemaFallsBackWithoutResponseFormat() async throws {
@@ -791,12 +819,15 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         XCTAssertTrue(storedError.contains("[redacted]"))
     }
 
-    private func configuration(apiKey: String? = nil) -> AIApprovalConfiguration {
+    private func configuration(
+        apiKey: String? = nil,
+        model: String = "test-model"
+    ) -> AIApprovalConfiguration {
         AIApprovalConfiguration(
             isEnabledByUser: true,
             manualRiskLevels: [],
             baseURL: "https://example.com/v1",
-            model: "test-model",
+            model: model,
             policy: "Approve read-only inspection.",
             apiKey: apiKey
         )

@@ -8,6 +8,8 @@ Codex 的 rollout/app-server 会同时刷新会话历史和 thread-list 状态�
 
 在“设置 → 智能审批”中填写 Base URL 和模型名。API Key 会保存在 macOS Keychain；不需要鉴权的本机服务可以留空。HTTPS 可连接任意地址，明文 HTTP 仅允许 `localhost`、`127.0.0.1` 和 `::1`。
 
+模型名为 `qwen3.7-flash`（包括带版本后缀的变体）时，请求 JSON 会自动携带 `"enable_thinking": false`，以使用百炼的非思考模式。该参数属于请求体，不是 HTTP Header；其他模型不会收到这个百炼专用字段。
+
 开启智能审批后，可以多选“需要人工确认”的风险等级：
 
 - 被选中的低、中、高风险结果保留给用户确认，不区分模型建议“允许”还是“拒绝”。
