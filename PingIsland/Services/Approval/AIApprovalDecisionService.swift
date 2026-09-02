@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import os.log
 import Security
+import SQLite3
 
 enum AIApprovalRuntimeLog {
     private static let logger = Logger(
@@ -1126,24 +1127,46 @@ final class AIApprovalAuditStore: ObservableObject {
     @Published private(set) var records: [AIApprovalAuditRecord] = []
 
     private let fileURL: URL
+    private let databaseURL: URL
     private let fileManager: FileManager
+    private let persistenceQueue = DispatchQueue(
+        label: "com.wudanwu.pingisland.ai-approval-audit",
+        qos: .utility
+    )
 
     init(fileURL: URL? = nil, fileManager: FileManager = .default) {
+        let resolvedFileURL = fileURL ?? Self.defaultFileURL(fileManager: fileManager)
         self.fileManager = fileManager
-        self.fileURL = fileURL ?? Self.defaultFileURL(fileManager: fileManager)
+        self.fileURL = resolvedFileURL
+        self.databaseURL = resolvedFileURL
+            .deletingPathExtension()
+            .appendingPathExtension("sqlite3")
         load()
     }
 
     func append(_ record: AIApprovalAuditRecord, now: Date = Date()) {
         records.insert(record, at: 0)
         prune(now: now)
-        persist()
+        guard records.contains(where: { $0.id == record.id }) else { return }
+        let databaseURL = databaseURL
+        let fileManager = fileManager
+        persistenceQueue.async {
+            guard Self.persist([record], now: now, to: databaseURL, fileManager: fileManager) else {
+                AIApprovalRuntimeLog.record(
+                    "audit_persist_failed",
+                    sessionID: record.sessionID,
+                    toolUseID: record.toolUseID ?? "",
+                    details: "operation=append"
+                )
+                return
+            }
+        }
     }
 
     func updateOutcome(id: UUID, outcome: AIApprovalExecutionOutcome) {
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         let current = records[index]
-        records[index] = AIApprovalAuditRecord(
+        let updatedRecord = AIApprovalAuditRecord(
             id: current.id,
             createdAt: current.createdAt,
             sessionID: current.sessionID,
@@ -1161,12 +1184,33 @@ final class AIApprovalAuditStore: ObservableObject {
             error: current.error,
             context: current.context
         )
-        persist()
+        records[index] = updatedRecord
+        let databaseURL = databaseURL
+        let fileManager = fileManager
+        persistenceQueue.async {
+            guard Self.persist([updatedRecord], to: databaseURL, fileManager: fileManager) else {
+                AIApprovalRuntimeLog.record(
+                    "audit_persist_failed",
+                    sessionID: updatedRecord.sessionID,
+                    toolUseID: updatedRecord.toolUseID ?? "",
+                    details: "operation=update"
+                )
+                return
+            }
+        }
     }
 
     func clear() {
         records = []
-        try? fileManager.removeItem(at: fileURL)
+        let fileURL = fileURL
+        let databaseURL = databaseURL
+        let fileManager = fileManager
+        persistenceQueue.sync {
+            try? fileManager.removeItem(at: fileURL)
+            for suffix in ["", "-journal", "-shm", "-wal"] {
+                try? fileManager.removeItem(atPath: databaseURL.path + suffix)
+            }
+        }
     }
 
     func exportData() throws -> Data {
@@ -1182,21 +1226,172 @@ final class AIApprovalAuditStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode([AIApprovalAuditRecord].self, from: data) else {
-            records = []
-            return
+        var recordsByID: [UUID: AIApprovalAuditRecord] = [:]
+        var decodedLegacyFile = false
+        if let data = try? Data(contentsOf: fileURL),
+           let legacyRecords = try? JSONDecoder().decode([AIApprovalAuditRecord].self, from: data) {
+            decodedLegacyFile = true
+            for record in legacyRecords {
+                recordsByID[record.id] = record
+            }
         }
-        records = decoded.sorted { $0.createdAt > $1.createdAt }
+        for record in Self.load(from: databaseURL, fileManager: fileManager) {
+            recordsByID[record.id] = record
+        }
+        records = recordsByID.values.sorted { $0.createdAt > $1.createdAt }
         prune()
-        persist()
+
+        let retainedRecords = records
+        let fileURL = fileURL
+        let databaseURL = databaseURL
+        let fileManager = fileManager
+        persistenceQueue.async {
+            let persisted = Self.persist(
+                decodedLegacyFile ? retainedRecords : [],
+                to: databaseURL,
+                fileManager: fileManager
+            )
+            if decodedLegacyFile, persisted {
+                try? fileManager.removeItem(at: fileURL)
+            }
+        }
     }
 
-    private func persist() {
-        guard let data = try? JSONEncoder().encode(records) else { return }
-        try? fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: .atomic)
+    func flushPersistence() {
+        persistenceQueue.sync {}
     }
+
+    private nonisolated static func load(
+        from databaseURL: URL,
+        fileManager: FileManager
+    ) -> [AIApprovalAuditRecord] {
+        guard let database = openDatabase(at: databaseURL, fileManager: fileManager) else { return [] }
+        defer { sqlite3_close(database) }
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT payload FROM audit_records ORDER BY created_at DESC LIMIT 1000",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        var records: [AIApprovalAuditRecord] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let bytes = sqlite3_column_blob(statement, 0) else { continue }
+            let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
+            if let record = try? JSONDecoder().decode(AIApprovalAuditRecord.self, from: data) {
+                records.append(record)
+            }
+        }
+        return records
+    }
+
+    private nonisolated static func persist(
+        _ records: [AIApprovalAuditRecord],
+        now: Date = Date(),
+        to databaseURL: URL,
+        fileManager: FileManager
+    ) -> Bool {
+        guard let database = openDatabase(at: databaseURL, fileManager: fileManager) else { return false }
+        defer { sqlite3_close(database) }
+        guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "INSERT OR REPLACE INTO audit_records (id, created_at, payload) VALUES (?, ?, ?)",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else {
+            sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+
+        let encoder = JSONEncoder()
+        do {
+            for record in records {
+                let data = try encoder.encode(record)
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                let id = record.id.uuidString.lowercased()
+                guard id.withCString({ sqlite3_bind_text(statement, 1, $0, -1, sqliteTransient) }) == SQLITE_OK,
+                      sqlite3_bind_double(statement, 2, record.createdAt.timeIntervalSinceReferenceDate) == SQLITE_OK,
+                      data.withUnsafeBytes({
+                          sqlite3_bind_blob(statement, 3, $0.baseAddress, Int32($0.count), sqliteTransient)
+                      }) == SQLITE_OK,
+                      sqlite3_step(statement) == SQLITE_DONE else {
+                    sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
+                    return false
+                }
+            }
+        } catch {
+            sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
+            return false
+        }
+
+        var pruneStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "DELETE FROM audit_records WHERE created_at < ?",
+            -1,
+            &pruneStatement,
+            nil
+        ) == SQLITE_OK else {
+            sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
+            return false
+        }
+        sqlite3_bind_double(
+            pruneStatement,
+            1,
+            now.addingTimeInterval(-retentionInterval).timeIntervalSinceReferenceDate
+        )
+        let prunedExpired = sqlite3_step(pruneStatement) == SQLITE_DONE
+        sqlite3_finalize(pruneStatement)
+        let prunedExcess = sqlite3_exec(
+            database,
+            "DELETE FROM audit_records WHERE id IN (SELECT id FROM audit_records ORDER BY created_at DESC LIMIT -1 OFFSET 1000)",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK
+        guard prunedExpired, prunedExcess,
+              sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+            sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
+            return false
+        }
+        return true
+    }
+
+    private nonisolated static func openDatabase(
+        at databaseURL: URL,
+        fileManager: FileManager
+    ) -> OpaquePointer? {
+        try? fileManager.createDirectory(
+            at: databaseURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var database: OpaquePointer?
+        guard sqlite3_open(databaseURL.path, &database) == SQLITE_OK,
+              let database,
+              sqlite3_exec(
+                  database,
+                  "CREATE TABLE IF NOT EXISTS audit_records (id TEXT PRIMARY KEY, created_at REAL NOT NULL, payload BLOB NOT NULL)",
+                  nil,
+                  nil,
+                  nil
+              ) == SQLITE_OK else {
+            if let database { sqlite3_close(database) }
+            return nil
+        }
+        return database
+    }
+
+    private nonisolated static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     private static func defaultFileURL(fileManager: FileManager) -> URL {
         let root = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first

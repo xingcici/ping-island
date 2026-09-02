@@ -713,9 +713,20 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         let now = Date()
         store.append(auditRecord(createdAt: now.addingTimeInterval(-AIApprovalAuditStore.retentionInterval - 1)), now: now)
         store.append(auditRecord(createdAt: now), now: now)
+        let currentID = try XCTUnwrap(store.records.first?.id)
+        store.updateOutcome(id: currentID, outcome: .autoApproved)
+        store.flushPersistence()
 
         XCTAssertEqual(store.records.count, 1)
         XCTAssertEqual(store.records.first?.createdAt, now)
+        let databaseURL = fileURL.deletingPathExtension().appendingPathExtension("sqlite3")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: databaseURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+
+        let reloadedStore = AIApprovalAuditStore(fileURL: fileURL)
+        XCTAssertEqual(reloadedStore.records.count, 1)
+        XCTAssertEqual(reloadedStore.records.first?.createdAt, now)
+        XCTAssertEqual(reloadedStore.records.first?.outcome, .autoApproved)
         let exported = try XCTUnwrap(
             JSONSerialization.jsonObject(with: store.exportData()) as? [[String: Any]]
         )
@@ -731,10 +742,15 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         try JSONEncoder().encode(excessRecords).write(to: fileURL, options: .atomic)
         let cappedStore = AIApprovalAuditStore(fileURL: fileURL)
         XCTAssertEqual(cappedStore.records.count, AIApprovalAuditStore.maximumRecordCount)
-
-        cappedStore.clear()
-        XCTAssertTrue(cappedStore.records.isEmpty)
+        cappedStore.flushPersistence()
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+
+        let migratedStore = AIApprovalAuditStore(fileURL: fileURL)
+        XCTAssertEqual(migratedStore.records.count, AIApprovalAuditStore.maximumRecordCount)
+        migratedStore.clear()
+        XCTAssertTrue(migratedStore.records.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: databaseURL.path))
     }
 
     @MainActor

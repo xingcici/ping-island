@@ -16,7 +16,7 @@
 | 事件边界 | AskUserQuestion、通知型/无响应 Hook、显式隐藏提示、Codex bypass 不进入模型审批 | `testIneligibleHookKindsNeverInvokeModel` 及各客户端 Hook 兼容测试 |
 | 提示与布局 | 处理中提示开关只改变自动展示；关闭时静默；悬浮提示使用紧凑高度；新请求清除后可再次自动展示 | `testEvaluatingHintSettingOnlyChangesAutomaticPresentation`、`DetachedIslandWindowControllerTests`、`SessionManualAttentionTrackerTests` |
 | 设置持久化 | 功能开关、人工风险多选、处理中提示、Base URL、模型、规则和旧模式迁移 | `AppSettingsPersistenceTests` |
-| 审计与隐私 | 30 天/1,000 条保留、会话与工具关联、完整 summary/上下文/参数导出、清空、API Key 不进入输入/审计错误 | `AIApprovalDecisionServiceTests` |
+| 审计与隐私 | SQLite 增量持久化与旧 JSON 迁移、30 天/1,000 条保留、会话与工具关联、完整 summary/上下文/参数导出、清空、API Key 不进入输入/审计错误 | `AIApprovalDecisionServiceTests` |
 | Hook 响应格式 | allow/deny/answer 的 Bridge 编码以及并发待响应按 `toolUseID` 独立移除 | `HookBridgeResponseEncodingTests`、Bridge E2E 测试、智能审批并发集成测试 |
 
 发布前执行：
