@@ -4,7 +4,7 @@
 
 | 领域 | 自动化验证 | 主要测试 |
 | --- | --- | --- |
-| OpenAI 兼容协议 | URL 补全、Bearer Header、JSON Schema、400/422 降级、429 重试、401 不重试、超时、非法 JSON/枚举/空理由、配置校验 | `AIApprovalDecisionServiceTests` |
+| OpenAI 兼容协议 | URL 补全、Bearer Header、JSON Schema、Qwen 3.7 Flash 非思考请求体、400/422 降级、429 重试、401 不重试、超时、非法 JSON/枚举/空理由、配置校验 | `AIApprovalDecisionServiceTests` |
 | 上下文预算 | `session_summary` + 最后用户指令 + 最近消息窗口；64 KiB 硬限制；超大工具参数、长中文/Emoji/控制字符安全裁剪；裁剪不改变完整审计 | `testContextBudgeterUsesSummaryRecentWindowAndHardPayloadLimit`、`testContextBudgeterKeepsSmallContextComplete`、`testModelContextBudgetingDoesNotAlterFullAuditRecord` |
 | 风险策略 | 允许/拒绝 × 低/中/高 × 所有人工确认多选组合；`git reset --hard` 本地高风险下限 | `testExecutionPolicyCoversEveryRiskDecisionAndManualSelection`、`testRiskFloorPromotesGitResetHardToHighRisk` |
 | 同会话并发 | 12 个 Hook 突发入队不丢失；3 个不同工具乱序返回后都保留；自动允许、自动拒绝和人工确认混排；人工项依次处理 | `ClaudeApprovalStateTests`、`AIApprovalConcurrencyIntegrationTests` |
@@ -16,7 +16,7 @@
 | 事件边界 | AskUserQuestion、通知型/无响应 Hook、显式隐藏提示、Codex bypass 不进入模型审批 | `testIneligibleHookKindsNeverInvokeModel` 及各客户端 Hook 兼容测试 |
 | 提示与布局 | 处理中提示开关只改变自动展示；关闭时静默；悬浮提示使用紧凑高度；新请求清除后可再次自动展示 | `testEvaluatingHintSettingOnlyChangesAutomaticPresentation`、`DetachedIslandWindowControllerTests`、`SessionManualAttentionTrackerTests` |
 | 设置持久化 | 功能开关、人工风险多选、处理中提示、Base URL、模型、规则和旧模式迁移 | `AppSettingsPersistenceTests` |
-| 审计与隐私 | 30 天/1,000 条保留、会话与工具关联、完整 summary/上下文/参数导出、清空、API Key 不进入输入/审计错误 | `AIApprovalDecisionServiceTests` |
+| 审计与隐私 | SQLite 增量持久化与旧 JSON 迁移、30 天/1,000 条保留、会话与工具关联、完整 summary/上下文/参数导出、清空、API Key 不进入输入/审计错误 | `AIApprovalDecisionServiceTests` |
 | Hook 响应格式 | allow/deny/answer 的 Bridge 编码以及并发待响应按 `toolUseID` 独立移除 | `HookBridgeResponseEncodingTests`、Bridge E2E 测试、智能审批并发集成测试 |
 
 发布前执行：

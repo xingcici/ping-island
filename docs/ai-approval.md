@@ -8,6 +8,8 @@ Codex 的 rollout/app-server 会同时刷新会话历史和 thread-list 状态�
 
 在“设置 → 智能审批”中填写 Base URL 和模型名。API Key 会保存在 macOS Keychain；不需要鉴权的本机服务可以留空。HTTPS 可连接任意地址，明文 HTTP 仅允许 `localhost`、`127.0.0.1` 和 `::1`。
 
+模型名为 `qwen3.7-flash`（包括带版本后缀的变体）时，请求 JSON 会自动携带 `"enable_thinking": false`，以使用百炼的非思考模式。该参数属于请求体，不是 HTTP Header；其他模型不会收到这个百炼专用字段。
+
 开启智能审批后，可以多选“需要人工确认”的风险等级：
 
 - 被选中的低、中、高风险结果保留给用户确认，不区分模型建议“允许”还是“拒绝”。
@@ -36,7 +38,7 @@ Thinking、工具结果和问题表单不会发送。模型输入不会对普通
 
 ## 本地审计
 
-审计记录在 Application Support 下保留 30 天，最多 1,000 条，可从设置页清空或导出 JSON。设置页只展示工具摘要、决定、风险、理由和可复制的会话 ID；导出文件包含完整 `sessionID`、`toolUseID`、工作目录、审批内容、工具参数、会话 summary 和用户/助手上下文，不包含 API Key。
+审计记录在 Application Support 下保留 30 天，最多 1,000 条，可从设置页清空或导出 JSON。记录使用本地 SQLite 按条增量持久化，旧版单文件审计会在后台迁移，避免自动回调前反复重写完整历史；导出的 JSON 格式不变。设置页只展示工具摘要、决定、风险、理由和可复制的会话 ID；导出文件包含完整 `sessionID`、`toolUseID`、工作目录、审批内容、工具参数、会话 summary 和用户/助手上下文，不包含 API Key。
 
 智能审批过程还会写入 `com.wudanwu.pingisland` / `AIApproval` 统一日志，记录 Hook 接收、任务排队、上下文输入字节数与裁剪统计、模型开始与重试、判断完成、人工分流、自动回调、用户接管和失败阶段。日志带 `sessionID` 与 `toolUseID`，可随应用诊断日志一起导出；日志只记录大小和数量，不记录裁剪内容。
 

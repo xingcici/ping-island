@@ -115,6 +115,7 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let responseFormat = try XCTUnwrap(json["response_format"] as? [String: Any])
         XCTAssertEqual(responseFormat["type"] as? String, "json_schema")
+        XCTAssertNil(json["enable_thinking"])
         let messages = try XCTUnwrap(json["messages"] as? [[String: Any]])
         let userMessage = try XCTUnwrap(messages.last?["content"] as? String)
         let modelContext = try XCTUnwrap(
@@ -122,6 +123,33 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         )
         XCTAssertEqual(modelContext["context_strategy"] as? String, "summary_recent_window")
         XCTAssertEqual(modelContext["latest_user_instruction"] as? String, "Inspect the README")
+    }
+
+    func testQwen37FlashDisablesThinkingInRequestBody() async throws {
+        let endpoint = URL(string: "https://example.com/v1/chat/completions")!
+        let responseData = try JSONSerialization.data(withJSONObject: [
+            "choices": [[
+                "message": [
+                    "content": "{\"decision\":\"approve\",\"risk\":\"low\",\"reason\":\"Read-only inspection\"}"
+                ]
+            ]]
+        ])
+        let transport = StubTransport(responses: [
+            (responseData, HTTPURLResponse(url: endpoint, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        ])
+        let client = OpenAICompatibleApprovalClient(transport: transport)
+
+        _ = try await client.decide(
+            configuration: configuration(model: " qwen3.7-flash-2026-08-01 "),
+            context: context()
+        )
+
+        let capturedRequests = await transport.capturedRequests()
+        let request = try XCTUnwrap(capturedRequests.first)
+        let body = try XCTUnwrap(request.httpBody)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(json["enable_thinking"] as? Bool, false)
+        XCTAssertNotNil(json["response_format"])
     }
 
     func testUnsupportedSchemaFallsBackWithoutResponseFormat() async throws {
@@ -685,9 +713,20 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         let now = Date()
         store.append(auditRecord(createdAt: now.addingTimeInterval(-AIApprovalAuditStore.retentionInterval - 1)), now: now)
         store.append(auditRecord(createdAt: now), now: now)
+        let currentID = try XCTUnwrap(store.records.first?.id)
+        store.updateOutcome(id: currentID, outcome: .autoApproved)
+        store.flushPersistence()
 
         XCTAssertEqual(store.records.count, 1)
         XCTAssertEqual(store.records.first?.createdAt, now)
+        let databaseURL = fileURL.deletingPathExtension().appendingPathExtension("sqlite3")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: databaseURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+
+        let reloadedStore = AIApprovalAuditStore(fileURL: fileURL)
+        XCTAssertEqual(reloadedStore.records.count, 1)
+        XCTAssertEqual(reloadedStore.records.first?.createdAt, now)
+        XCTAssertEqual(reloadedStore.records.first?.outcome, .autoApproved)
         let exported = try XCTUnwrap(
             JSONSerialization.jsonObject(with: store.exportData()) as? [[String: Any]]
         )
@@ -703,10 +742,15 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         try JSONEncoder().encode(excessRecords).write(to: fileURL, options: .atomic)
         let cappedStore = AIApprovalAuditStore(fileURL: fileURL)
         XCTAssertEqual(cappedStore.records.count, AIApprovalAuditStore.maximumRecordCount)
-
-        cappedStore.clear()
-        XCTAssertTrue(cappedStore.records.isEmpty)
+        cappedStore.flushPersistence()
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+
+        let migratedStore = AIApprovalAuditStore(fileURL: fileURL)
+        XCTAssertEqual(migratedStore.records.count, AIApprovalAuditStore.maximumRecordCount)
+        migratedStore.clear()
+        XCTAssertTrue(migratedStore.records.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: databaseURL.path))
     }
 
     @MainActor
@@ -791,12 +835,15 @@ final class AIApprovalDecisionServiceTests: XCTestCase {
         XCTAssertTrue(storedError.contains("[redacted]"))
     }
 
-    private func configuration(apiKey: String? = nil) -> AIApprovalConfiguration {
+    private func configuration(
+        apiKey: String? = nil,
+        model: String = "test-model"
+    ) -> AIApprovalConfiguration {
         AIApprovalConfiguration(
             isEnabledByUser: true,
             manualRiskLevels: [],
             baseURL: "https://example.com/v1",
-            model: "test-model",
+            model: model,
             policy: "Approve read-only inspection.",
             apiKey: apiKey
         )
