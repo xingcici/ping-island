@@ -1,7 +1,17 @@
 import Foundation
+import os.log
 
 actor CodexRolloutParser {
     static let shared = CodexRolloutParser()
+    private static let logger = Logger(subsystem: "com.wudanwu.pingisland", category: "CodexRollout")
+    private static let relevantEventTypes: Set<String> = [
+        "user_message", "agent_message", "task_started", "task_complete",
+        "context_compacted", "turn_aborted"
+    ]
+    private static let relevantResponseTypes: Set<String> = [
+        "function_call", "custom_tool_call", "web_search_call",
+        "function_call_output", "custom_tool_call_output"
+    ]
 
     private struct ParsedSubagentMetadata {
         let parentThreadId: String?
@@ -12,6 +22,45 @@ actor CodexRolloutParser {
 
     private struct CachedSnapshot {
         let modificationDate: Date
+        let fileSize: UInt64
+        let fileIdentifier: UInt64?
+        let pendingData: Data
+        let parserState: ParserState
+        let nextLineIndex: Int
+        let snapshot: CodexThreadSnapshot
+    }
+
+    private struct ParserState {
+        var resolvedThreadId: String
+        var resolvedCwd: String
+        var createdAt: Date?
+        var updatedAt: Date?
+        var latestTurnId: String?
+        var historyItems: [ChatHistoryItem]
+        var toolIndexes: [String: Int]
+        var runningToolIDs: Set<String>
+        var firstUserMessage: String?
+        var lastMessage: String?
+        var lastMessageRole: String?
+        var lastUserMessageDate: Date?
+        var latestUserText: String?
+        var latestAgentText: String?
+        var latestAgentPhase: String?
+        var latestFinalText: String?
+        var latestFinalPhase: String?
+        var phase: SessionPhase
+        var isTurnInterrupted: Bool
+        var intervention: SessionIntervention?
+        var sessionName: String?
+        var origin: String?
+        var originator: String?
+        var threadSource: String?
+        var subagentMetadata: ParsedSubagentMetadata
+    }
+
+    private struct ParsedRollout {
+        let state: ParserState
+        let nextLineIndex: Int
         let snapshot: CodexThreadSnapshot
     }
 
@@ -36,34 +85,108 @@ actor CodexRolloutParser {
     ) -> CodexThreadSnapshot? {
         guard let fileURL = resolveRolloutURL(threadId: threadId, clientInfo: clientInfo),
               let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-              let modificationDate = attributes[.modificationDate] as? Date else {
+              let modificationDate = attributes[.modificationDate] as? Date,
+              let fileSize = (attributes[.size] as? NSNumber)?.uint64Value else {
             return nil
         }
 
-        if let cached = cache[fileURL.path], cached.modificationDate == modificationDate {
+        let fileIdentifier = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+
+        if let cached = cache[fileURL.path],
+           cached.modificationDate == modificationDate,
+           cached.fileSize == fileSize,
+           cached.fileIdentifier == fileIdentifier {
             return cached.snapshot
         }
 
-        guard let raw = try? String(contentsOf: fileURL, encoding: .utf8) else {
+        let cached = cache[fileURL.path]
+        let canParseIncrementally = cached?.fileIdentifier == fileIdentifier
+            && fileSize > (cached?.fileSize ?? fileSize)
+        let readOffset = canParseIncrementally ? cached?.fileSize ?? 0 : 0
+        let startedAt = Date()
+
+        guard let newData = read(fileURL, from: readOffset, byteCount: fileSize - readOffset) else {
             return nil
         }
 
-        let snapshot = parseRollout(
+        let pendingData = canParseIncrementally ? cached?.pendingData ?? Data() : Data()
+        let inputData: Data
+        if pendingData.isEmpty {
+            inputData = newData
+        } else {
+            var combined = pendingData
+            combined.append(newData)
+            inputData = combined
+        }
+        let records = completeRecords(from: inputData)
+
+        if records.complete.isEmpty, let cached, canParseIncrementally {
+            cache[fileURL.path] = CachedSnapshot(
+                modificationDate: modificationDate,
+                fileSize: fileSize,
+                fileIdentifier: fileIdentifier,
+                pendingData: records.pending,
+                parserState: cached.parserState,
+                nextLineIndex: cached.nextLineIndex,
+                snapshot: cached.snapshot
+            )
+            return cached.snapshot
+        }
+
+        guard let raw = String(data: records.complete, encoding: .utf8) else { return nil }
+        let parsed = parseRollout(
             raw,
             fileURL: fileURL,
             fallbackThreadId: threadId,
             fallbackCwd: fallbackCwd,
-            clientInfo: clientInfo
+            clientInfo: clientInfo,
+            initialState: canParseIncrementally ? cached?.parserState : nil,
+            startingLineIndex: canParseIncrementally ? cached?.nextLineIndex ?? 0 : 0
         )
 
-        if let snapshot {
+        if let parsed {
             cache[fileURL.path] = CachedSnapshot(
                 modificationDate: modificationDate,
-                snapshot: snapshot
+                fileSize: fileSize,
+                fileIdentifier: fileIdentifier,
+                pendingData: records.pending,
+                parserState: parsed.state,
+                nextLineIndex: parsed.nextLineIndex,
+                snapshot: parsed.snapshot
+            )
+            let durationMS = Int(Date().timeIntervalSince(startedAt) * 1_000)
+            Self.logger.debug(
+                "Codex rollout parsed mode=\(canParseIncrementally ? "incremental" : "full", privacy: .public) bytesRead=\(newData.count, privacy: .public) fileBytes=\(fileSize, privacy: .public) lines=\(parsed.nextLineIndex - (canParseIncrementally ? cached?.nextLineIndex ?? 0 : 0), privacy: .public) durationMs=\(durationMS, privacy: .public)"
             )
         }
 
-        return snapshot
+        return parsed?.snapshot
+    }
+
+    private func read(_ fileURL: URL, from offset: UInt64, byteCount: UInt64) -> Data? {
+        guard byteCount <= UInt64(Int.max) else { return nil }
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
+        defer { try? handle.close() }
+
+        do {
+            try handle.seek(toOffset: offset)
+            return try handle.read(upToCount: Int(byteCount)) ?? Data()
+        } catch {
+            return nil
+        }
+    }
+
+    private func completeRecords(from data: Data) -> (complete: Data, pending: Data) {
+        guard !data.isEmpty, data.last != 0x0A else { return (data, Data()) }
+
+        let tailStart = data.lastIndex(of: 0x0A).map { data.index(after: $0) } ?? data.startIndex
+        let tail = Data(data[tailStart...])
+        if tail.allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x0D })
+            || (try? JSONSerialization.jsonObject(with: tail)) is [String: Any] {
+            return (data, Data())
+        }
+
+        return (Data(data[..<tailStart]), tail)
     }
 
     private func parseRollout(
@@ -71,44 +194,49 @@ actor CodexRolloutParser {
         fileURL: URL,
         fallbackThreadId: String,
         fallbackCwd: String,
-        clientInfo: SessionClientInfo?
-    ) -> CodexThreadSnapshot? {
+        clientInfo: SessionClientInfo?,
+        initialState: ParserState?,
+        startingLineIndex: Int
+    ) -> ParsedRollout? {
         let lines = content.split(separator: "\n")
-        guard !lines.isEmpty else { return nil }
+        guard !lines.isEmpty || initialState != nil else { return nil }
 
-        var resolvedThreadId = fallbackThreadId
-        var resolvedCwd = fallbackCwd.nonEmpty ?? "/"
-        var createdAt: Date?
-        var updatedAt: Date?
-        var latestTurnId: String?
+        var resolvedThreadId = initialState?.resolvedThreadId ?? fallbackThreadId
+        var resolvedCwd = initialState?.resolvedCwd ?? fallbackCwd.nonEmpty ?? "/"
+        var createdAt = initialState?.createdAt
+        var updatedAt = initialState?.updatedAt
+        var latestTurnId = initialState?.latestTurnId
 
-        var historyItems: [ChatHistoryItem] = []
-        var toolIndexes: [String: Int] = [:]
-        var firstUserMessage: String?
-        var lastMessage: String?
-        var lastMessageRole: String?
-        var lastUserMessageDate: Date?
-        var latestUserText: String?
-        var latestAgentText: String?
-        var latestAgentPhase: String?
-        var latestFinalText: String?
-        var latestFinalPhase: String?
-        var phase: SessionPhase = .idle
-        var isTurnInterrupted = false
-        var intervention: SessionIntervention?
-        var sessionName: String?
-        var origin: String?
-        var originator: String?
-        var threadSource: String?
-        var subagentMetadata = ParsedSubagentMetadata(
+        var historyItems = initialState?.historyItems ?? []
+        var toolIndexes = initialState?.toolIndexes ?? [:]
+        var runningToolIDs = initialState?.runningToolIDs ?? []
+        var firstUserMessage = initialState?.firstUserMessage
+        var lastMessage = initialState?.lastMessage
+        var lastMessageRole = initialState?.lastMessageRole
+        var lastUserMessageDate = initialState?.lastUserMessageDate
+        var latestUserText = initialState?.latestUserText
+        var latestAgentText = initialState?.latestAgentText
+        var latestAgentPhase = initialState?.latestAgentPhase
+        var latestFinalText = initialState?.latestFinalText
+        var latestFinalPhase = initialState?.latestFinalPhase
+        var phase = initialState?.phase ?? .idle
+        var isTurnInterrupted = initialState?.isTurnInterrupted ?? false
+        var intervention = initialState?.intervention
+        var sessionName = initialState?.sessionName
+        var origin = initialState?.origin
+        var originator = initialState?.originator
+        var threadSource = initialState?.threadSource
+        var subagentMetadata = initialState?.subagentMetadata ?? ParsedSubagentMetadata(
             parentThreadId: nil,
             depth: nil,
             nickname: nil,
             role: nil
         )
 
-        for (index, line) in lines.enumerated() {
-            guard let data = line.data(using: .utf8),
+        for (offset, line) in lines.enumerated() {
+            let index = startingLineIndex + offset
+            guard Self.isRelevantRecord(line),
+                  let data = line.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 continue
             }
@@ -189,7 +317,7 @@ actor CodexRolloutParser {
                     phase = .processing
 
                 case "task_complete":
-                    if !historyItems.contains(where: Self.isRunningToolItem(_:)) {
+                    if runningToolIDs.isEmpty {
                         phase = .idle
                     }
 
@@ -199,7 +327,12 @@ actor CodexRolloutParser {
                 case "turn_aborted":
                     isTurnInterrupted = true
                     intervention = nil
-                    markRunningToolsInterrupted(in: &historyItems)
+                    markRunningToolsInterrupted(
+                        in: &historyItems,
+                        toolIndexes: toolIndexes,
+                        runningToolIDs: runningToolIDs
+                    )
+                    runningToolIDs.removeAll()
                     phase = .idle
 
                 default:
@@ -231,6 +364,7 @@ actor CodexRolloutParser {
                     )
                     toolIndexes[callId] = historyItems.count
                     historyItems.append(item)
+                    runningToolIDs.insert(callId)
                     if let questionIntervention = codexUserInputIntervention(
                         callId: callId,
                         toolName: name,
@@ -263,6 +397,7 @@ actor CodexRolloutParser {
                     toolIndexes[callId] = historyItems.count
                     historyItems.append(item)
                     if status == .running {
+                        runningToolIDs.insert(callId)
                         phase = .processing
                     }
 
@@ -284,6 +419,7 @@ actor CodexRolloutParser {
                     )
                     toolIndexes[callId] = historyItems.count
                     historyItems.append(item)
+                    runningToolIDs.insert(callId)
                     phase = .processing
 
                 case "function_call_output":
@@ -298,6 +434,7 @@ actor CodexRolloutParser {
                         type: .toolCall(tool),
                         timestamp: historyItems[toolIndex].timestamp
                     )
+                    runningToolIDs.remove(callId)
                     if intervention?.matchesResolvedToolUseId(callId) == true {
                         intervention = nil
                         phase = .processing
@@ -320,6 +457,7 @@ actor CodexRolloutParser {
                         type: .toolCall(tool),
                         timestamp: historyItems[toolIndex].timestamp
                     )
+                    runningToolIDs.remove(callId)
 
                 default:
                     continue
@@ -330,12 +468,45 @@ actor CodexRolloutParser {
             }
         }
 
+        let parserState = ParserState(
+            resolvedThreadId: resolvedThreadId,
+            resolvedCwd: resolvedCwd,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            latestTurnId: latestTurnId,
+            historyItems: historyItems,
+            toolIndexes: toolIndexes,
+            runningToolIDs: runningToolIDs,
+            firstUserMessage: firstUserMessage,
+            lastMessage: lastMessage,
+            lastMessageRole: lastMessageRole,
+            lastUserMessageDate: lastUserMessageDate,
+            latestUserText: latestUserText,
+            latestAgentText: latestAgentText,
+            latestAgentPhase: latestAgentPhase,
+            latestFinalText: latestFinalText,
+            latestFinalPhase: latestFinalPhase,
+            phase: phase,
+            isTurnInterrupted: isTurnInterrupted,
+            intervention: intervention,
+            sessionName: sessionName,
+            origin: origin,
+            originator: originator,
+            threadSource: threadSource,
+            subagentMetadata: subagentMetadata
+        )
+
         if intervention?.kind == .question {
             phase = .waitingForInput
         } else if isTurnInterrupted {
-            markRunningToolsInterrupted(in: &historyItems)
+            markRunningToolsInterrupted(
+                in: &historyItems,
+                toolIndexes: toolIndexes,
+                runningToolIDs: runningToolIDs
+            )
+            runningToolIDs.removeAll()
             phase = .idle
-        } else if historyItems.contains(where: Self.isRunningToolItem(_:)) {
+        } else if !runningToolIDs.isEmpty {
             phase = .processing
         } else if phase == .processing, latestFinalText != nil {
             phase = .idle
@@ -368,7 +539,11 @@ actor CodexRolloutParser {
             || clientInfo?.iTermSessionIdentifier?.isEmpty == false
 
         if prefersCLIContext,
-           let inferredIntervention = Self.pendingMCPApprovalIntervention(from: historyItems) {
+           let inferredIntervention = Self.pendingMCPApprovalIntervention(
+               from: historyItems,
+               toolIndexes: toolIndexes,
+               runningToolIDs: runningToolIDs
+           ) {
             intervention = inferredIntervention
             phase = .waitingForInput
         }
@@ -403,7 +578,7 @@ actor CodexRolloutParser {
             processName: clientInfo?.processName
         ))
 
-        return CodexThreadSnapshot(
+        let snapshot = CodexThreadSnapshot(
             threadId: resolvedThreadId,
             name: sessionName,
             preview: preview,
@@ -424,6 +599,12 @@ actor CodexRolloutParser {
             latestResponsePhase: latestFinalPhase ?? latestAgentPhase,
             latestUserText: latestUserText,
             isTurnInterrupted: isTurnInterrupted
+        )
+
+        return ParsedRollout(
+            state: parserState,
+            nextLineIndex: startingLineIndex + lines.count,
+            snapshot: snapshot
         )
     }
 
@@ -497,16 +678,37 @@ actor CodexRolloutParser {
         )
     }
 
-    private static func isRunningToolItem(_ item: ChatHistoryItem) -> Bool {
-        guard case .toolCall(let tool) = item.type else {
+    private static func isRelevantRecord(_ line: Substring) -> Bool {
+        guard let (recordType, remainder) = nextType(in: line) else { return false }
+        switch recordType {
+        case "session_meta", "turn_context":
+            return true
+        case "event_msg":
+            return nextType(in: remainder).map { relevantEventTypes.contains($0.type) } ?? false
+        case "response_item":
+            return nextType(in: remainder).map { relevantResponseTypes.contains($0.type) } ?? false
+        default:
             return false
         }
-        return tool.status == .running || tool.status == .waitingForApproval
     }
 
-    private func markRunningToolsInterrupted(in historyItems: inout [ChatHistoryItem]) {
-        for index in historyItems.indices {
-            guard case .toolCall(var tool) = historyItems[index].type,
+    private static func nextType(in line: Substring) -> (type: String, remainder: Substring)? {
+        guard let keyRange = line.range(of: #""type":""#),
+              let end = line[keyRange.upperBound...].firstIndex(of: "\"") else {
+            return nil
+        }
+        return (String(line[keyRange.upperBound..<end]), line[line.index(after: end)...])
+    }
+
+    private func markRunningToolsInterrupted(
+        in historyItems: inout [ChatHistoryItem],
+        toolIndexes: [String: Int],
+        runningToolIDs: Set<String>
+    ) {
+        for toolID in runningToolIDs {
+            guard let index = toolIndexes[toolID],
+                  historyItems.indices.contains(index),
+                  case .toolCall(var tool) = historyItems[index].type,
                   tool.status == .running || tool.status == .waitingForApproval else {
                 continue
             }
@@ -520,37 +722,43 @@ actor CodexRolloutParser {
         }
     }
 
-    private static func pendingMCPApprovalIntervention(from historyItems: [ChatHistoryItem]) -> SessionIntervention? {
-        for item in historyItems.reversed() {
-            guard case .toolCall(let tool) = item.type,
+    private static func pendingMCPApprovalIntervention(
+        from historyItems: [ChatHistoryItem],
+        toolIndexes: [String: Int],
+        runningToolIDs: Set<String>
+    ) -> SessionIntervention? {
+        let latestMCPTool = runningToolIDs.compactMap { toolID -> (index: Int, tool: ToolCallItem)? in
+            guard let index = toolIndexes[toolID],
+                  historyItems.indices.contains(index),
+                  case .toolCall(let tool) = historyItems[index].type,
                   tool.status == .running,
                   tool.name.hasPrefix("mcp__") else {
-                continue
+                return nil
             }
+            return (index, tool)
+        }.max { $0.index < $1.index }?.tool
 
-            let parts = tool.name.split(separator: "__", omittingEmptySubsequences: false)
-            guard parts.count >= 3 else { continue }
-            let server = String(parts[1])
-            let toolName = parts[2...].joined(separator: "__")
+        guard let latestMCPTool else { return nil }
+        let parts = latestMCPTool.name.split(separator: "__", omittingEmptySubsequences: false)
+        guard parts.count >= 3 else { return nil }
+        let server = String(parts[1])
+        let toolName = parts[2...].joined(separator: "__")
 
-            return SessionIntervention(
-                id: "mcp-pending-\(server)-\(toolName)",
-                kind: .question,
-                title: "MCP Tool Approval Needed",
-                message: "Allow the \(server) MCP server to run tool \"\(toolName)\"?",
-                options: [],
-                questions: [],
-                supportsSessionScope: false,
-                metadata: [
-                    "responseMode": "external_only",
-                    "source": "rollout_pending_mcp",
-                    "server": server,
-                    "toolName": toolName
-                ]
-            )
-        }
-
-        return nil
+        return SessionIntervention(
+            id: "mcp-pending-\(server)-\(toolName)",
+            kind: .question,
+            title: "MCP Tool Approval Needed",
+            message: "Allow the \(server) MCP server to run tool \"\(toolName)\"?",
+            options: [],
+            questions: [],
+            supportsSessionScope: false,
+            metadata: [
+                "responseMode": "external_only",
+                "source": "rollout_pending_mcp",
+                "server": server,
+                "toolName": toolName
+            ]
+        )
     }
 
     private func codexUserInputIntervention(

@@ -595,7 +595,7 @@ actor CodexAppServerMonitor {
         case "item/autoApprovalReview/completed":
             guard let threadId = params["threadId"] as? String else { return }
             await SessionStore.shared.resolveCodexIntervention(sessionId: threadId, nextPhase: .processing)
-            _ = try? await readThread(threadId: threadId, includeTurns: true)
+            await SessionStore.shared.requestFileSync(for: threadId)
 
         case "thread/started":
             if let thread = params["thread"] as? [String: Any] {

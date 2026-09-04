@@ -41,6 +41,7 @@ This file is a routing layer for coding agents working in this repo. Keep it sho
   - State-only hook delivery is acknowledged by the app after envelope decoding and routing; keep bridge socket writes complete and do not report `deliveryOutcome=delivered` without a matching app acknowledgement
 - Codex ingress: `PingIsland/Services/Codex/`, `PingIsland/UI/Views/CodexSessionView.swift`
   - Hook-less fallback parsing for Codex sessions lives in `PingIsland/Services/Codex/CodexRolloutParser.swift`
+  - Rollout parsing caches the file cursor and accumulated parser state so append-only updates process only new JSONL records; truncation or file replacement must trigger a full rebuild. File-driven refreshes must use this incremental path directly instead of requesting full App Server turns first. Cold scans must skip JSONL record types that do not contribute to session state or history before JSON decoding
 - Terminal and focus control: `PingIsland/Services/Tmux/`, `PingIsland/Services/Window/`, `PingIsland/Utilities/TerminalVisibilityDetector.swift`
   - Terminal focus flows currently cover iTerm2, Ghostty, Terminal.app, tmux, and IDE-hosted terminals
 - Remote SSH forwarding and remote-host management: `PingIsland/Services/Remote/`

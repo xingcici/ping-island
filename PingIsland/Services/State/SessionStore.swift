@@ -67,8 +67,7 @@ actor SessionStore {
 
     /// Sync debounce interval (100ms)
     private let syncDebounceNs: UInt64 = 100_000_000
-    private let codexRolloutParseFallbackInterval: TimeInterval = 2
-    private let codexRolloutParseWithAppServerInterval: TimeInterval = 30
+    private let codexRolloutParseInterval: TimeInterval = 2
     private let codexHookPlaceholderPruneDelayNs: UInt64 = 10_000_000_000
     private let codexAppServerPlaceholderPruneDelayNs: UInt64 = 60_000_000_000
     private let codexContinuationMergeWindow: TimeInterval = 10 * 60
@@ -2496,11 +2495,17 @@ actor SessionStore {
         from latestSession: SessionState,
         into session: inout SessionState
     ) -> Int {
+        var currentIndexes: [String: Int] = [:]
+        currentIndexes.reserveCapacity(session.chatItems.count)
+        for (index, item) in session.chatItems.enumerated() {
+            currentIndexes[item.id] = index
+        }
+
         var mergedCount = 0
         for latestItem in latestSession.chatItems {
             guard case .toolCall(let latestTool) = latestItem.type else { continue }
 
-            if let currentIndex = session.chatItems.firstIndex(where: { $0.id == latestItem.id }),
+            if let currentIndex = currentIndexes[latestItem.id],
                case .toolCall(let currentTool) = session.chatItems[currentIndex].type {
                 if currentTool.status == .waitingForApproval || latestTool.status == .waitingForApproval {
                     if currentTool.status != latestTool.status {
@@ -2512,6 +2517,7 @@ actor SessionStore {
             }
 
             if latestTool.status == .waitingForApproval {
+                currentIndexes[latestItem.id] = session.chatItems.count
                 session.chatItems.append(latestItem)
                 mergedCount += 1
             }
@@ -3371,22 +3377,7 @@ actor SessionStore {
             try? await Task.sleep(nanoseconds: syncDebounceNs)
             guard !Task.isCancelled else { return }
 
-            let appServerSnapshot: CodexThreadSnapshot?
-            do {
-                appServerSnapshot = try await CodexAppServerMonitor.shared.readThread(
-                    threadId: sessionId,
-                    includeTurns: true
-                )
-            } catch {
-                appServerSnapshot = nil
-                // Fall back to rollout parsing when the app-server is unavailable
-                // or the thread hasn't been materialized there yet.
-            }
-
-            guard await self?.reserveCodexRolloutParseIfNeeded(
-                sessionId: sessionId,
-                hasAppServerSnapshot: appServerSnapshot != nil
-            ) == true else {
+            guard await self?.reserveCodexRolloutParseIfNeeded(sessionId: sessionId) == true else {
                 return
             }
 
@@ -3401,32 +3392,18 @@ actor SessionStore {
                 return
             }
 
-            if let appServerSnapshot,
-               snapshot.intervention == nil,
-               snapshot.historyItems.count <= appServerSnapshot.historyItems.count,
-               snapshot.updatedAt <= appServerSnapshot.updatedAt {
-                return
-            }
-
             await self?.syncCodexThreadSnapshot(snapshot, ingress: .hookBridge)
         }
     }
 
-    private func reserveCodexRolloutParseIfNeeded(
-        sessionId: String,
-        hasAppServerSnapshot: Bool
-    ) -> Bool {
+    private func reserveCodexRolloutParseIfNeeded(sessionId: String) -> Bool {
         guard !codexRolloutParsesInFlight.contains(sessionId) else {
             return false
         }
 
         let now = Date()
-        let interval = hasAppServerSnapshot
-            ? codexRolloutParseWithAppServerInterval
-            : codexRolloutParseFallbackInterval
-
         if let lastParseAt = lastCodexRolloutParseAt[sessionId],
-           now.timeIntervalSince(lastParseAt) < interval {
+           now.timeIntervalSince(lastParseAt) < codexRolloutParseInterval {
             return false
         }
 

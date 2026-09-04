@@ -3,6 +3,135 @@ import XCTest
 @testable import Ping_Island
 
 final class CodexRolloutParserTests: XCTestCase {
+    func testRolloutParserAppliesAppendedLinesWithoutDuplicatingHistory() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let threadId = "019f098a-04fe-7402-9a6d-211087545340"
+        let rolloutURL = tempDirectory.appendingPathComponent("rollout-\(threadId).jsonl")
+        let initialRollout = """
+        {"timestamp":"2026-06-27T14:44:29Z","type":"session_meta","payload":{"id":"\(threadId)","cwd":"/tmp/project","source":"desktop"}}
+        {"timestamp":"2026-06-27T14:44:30Z","type":"event_msg","payload":{"type":"user_message","message":"run tests"}}
+        """
+        try initialRollout.write(to: rolloutURL, atomically: true, encoding: .utf8)
+
+        let clientInfo = SessionClientInfo(
+            kind: .codexApp,
+            profileID: "codex-app",
+            name: "Codex App",
+            bundleIdentifier: "com.openai.codex",
+            sessionFilePath: rolloutURL.path
+        )
+        let initialSnapshot = await CodexRolloutParser.shared.parseThread(
+            threadId: threadId,
+            fallbackCwd: "/tmp/project",
+            clientInfo: clientInfo
+        )
+        XCTAssertEqual(initialSnapshot?.historyItems.count, 1)
+
+        let appendedLine = "\n{\"timestamp\":\"2026-06-27T14:44:31Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"final\",\"message\":\"Tests passed.\"}}"
+        let handle = try FileHandle(forWritingTo: rolloutURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(appendedLine.utf8))
+        try handle.close()
+
+        let updatedSnapshot = await CodexRolloutParser.shared.parseThread(
+            threadId: threadId,
+            fallbackCwd: "/tmp/project",
+            clientInfo: clientInfo
+        )
+
+        XCTAssertEqual(updatedSnapshot?.historyItems.count, 2)
+        XCTAssertEqual(updatedSnapshot?.latestResponseText, "Tests passed.")
+        XCTAssertEqual(updatedSnapshot?.phase, .idle)
+    }
+
+    func testRolloutParserWaitsForPartiallyWrittenJSONLRecord() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let threadId = "019f098a-04fe-7402-9a6d-211087545342"
+        let rolloutURL = tempDirectory.appendingPathComponent("rollout-\(threadId).jsonl")
+        let prefix = """
+        {"timestamp":"2026-06-27T14:44:29Z","type":"session_meta","payload":{"id":"\(threadId)","cwd":"/tmp/project","source":"desktop"}}
+        {"timestamp":"2026-06-27T14:44:30Z","type":"event_msg","payload":{"type":"user_message","message":"part
+        """
+        try prefix.write(to: rolloutURL, atomically: true, encoding: .utf8)
+
+        let clientInfo = SessionClientInfo(
+            kind: .codexApp,
+            profileID: "codex-app",
+            name: "Codex App",
+            bundleIdentifier: "com.openai.codex",
+            sessionFilePath: rolloutURL.path
+        )
+        let partialSnapshot = await CodexRolloutParser.shared.parseThread(
+            threadId: threadId,
+            fallbackCwd: "/tmp/project",
+            clientInfo: clientInfo
+        )
+        XCTAssertTrue(partialSnapshot?.historyItems.isEmpty ?? false)
+
+        let handle = try FileHandle(forWritingTo: rolloutURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("ial write\"}}\n".utf8))
+        try handle.close()
+
+        let completedSnapshot = await CodexRolloutParser.shared.parseThread(
+            threadId: threadId,
+            fallbackCwd: "/tmp/project",
+            clientInfo: clientInfo
+        )
+        XCTAssertEqual(completedSnapshot?.historyItems.count, 1)
+        XCTAssertEqual(completedSnapshot?.latestUserText, "partial write")
+    }
+
+    func testRolloutParserRebuildsAfterFileTruncation() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let threadId = "019f098a-04fe-7402-9a6d-211087545341"
+        let rolloutURL = tempDirectory.appendingPathComponent("rollout-\(threadId).jsonl")
+        let initialRollout = """
+        {"timestamp":"2026-06-27T14:44:29Z","type":"session_meta","payload":{"id":"\(threadId)","cwd":"/tmp/project","source":"desktop"}}
+        {"timestamp":"2026-06-27T14:44:30Z","type":"event_msg","payload":{"type":"user_message","message":"old prompt"}}
+        {"timestamp":"2026-06-27T14:44:31Z","type":"event_msg","payload":{"type":"agent_message","phase":"final","message":"old response"}}
+        """
+        try initialRollout.write(to: rolloutURL, atomically: false, encoding: .utf8)
+
+        let clientInfo = SessionClientInfo(
+            kind: .codexApp,
+            profileID: "codex-app",
+            name: "Codex App",
+            bundleIdentifier: "com.openai.codex",
+            sessionFilePath: rolloutURL.path
+        )
+        _ = await CodexRolloutParser.shared.parseThread(
+            threadId: threadId,
+            fallbackCwd: "/tmp/project",
+            clientInfo: clientInfo
+        )
+
+        let replacement = "{\"timestamp\":\"2026-06-27T14:45:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"new prompt\"}}"
+        try replacement.write(to: rolloutURL, atomically: false, encoding: .utf8)
+
+        let rebuiltSnapshot = await CodexRolloutParser.shared.parseThread(
+            threadId: threadId,
+            fallbackCwd: "/tmp/project",
+            clientInfo: clientInfo
+        )
+
+        XCTAssertEqual(rebuiltSnapshot?.historyItems.count, 1)
+        XCTAssertEqual(rebuiltSnapshot?.latestUserText, "new prompt")
+        XCTAssertNil(rebuiltSnapshot?.latestResponseText)
+    }
+
     func testRolloutParserIgnoresCodexMemoryMaintenanceThread() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

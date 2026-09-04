@@ -1123,6 +1123,12 @@ class SessionMonitor: ObservableObject {
         let session = await SessionStore.shared.session(for: sessionId)
         let resolvedSessionId = await SessionStore.shared.resolvedCodexSessionId(for: sessionId)
 
+        if session?.clientInfo.sessionFilePath?.isEmpty == false,
+           let snapshot = await loadCodexRolloutFallback(sessionId: sessionId, session: session),
+           !snapshot.historyItems.isEmpty {
+            return snapshot
+        }
+
         do {
             let snapshot = try await CodexAppServerMonitor.shared.readThread(
                 threadId: resolvedSessionId,
